@@ -5438,12 +5438,10 @@ async def main():
         ),
         id="midnight_reset"
     )
-
     
     scheduler.start()
     logger.info("📅 Планировщик запущен")
     
     await dp.start_polling(bot)
 if __name__ == "__main__":
-
     asyncio.run(main())
