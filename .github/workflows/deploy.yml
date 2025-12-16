@@ -1,0 +1,48 @@
+name: Deploy Telegram Bot
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 🚚 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🔑 Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SERVER_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan ${{ secrets.SERVER_HOST }} >> ~/.ssh/known_hosts
+
+      - name: 🚀 Deploy to server
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no \
+            ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} << 'EOF'
+            # Создаём папку для бота
+            mkdir -p ~/telegram-bot
+            cd ~/telegram-bot
+
+            # Получаем код с GitHub
+            git init .
+            git remote add origin https://github.com/dasiko9947-gif/300pinkov_bot.git
+            git fetch --depth=1 origin main
+            git reset --hard origin/main
+
+            # Устанавливаем venv, если нет
+            sudo apt update && sudo apt install -y python3-venv
+            python3 -m venv venv
+            source venv/bin/activate
+            pip install --upgrade pip
+            pip install -r requirements.txt
+
+            # Обновляем .env
+            echo "TELEGRAM_TOKEN=${{ secrets.TELEGRAM_TOKEN }}" > .env
+
+            # Перезапускаем systemd-сервис
+            sudo systemctl restart telegram-bot
+            echo "[✅] Bot deployed and restarted at $(date)"
+          EOF
