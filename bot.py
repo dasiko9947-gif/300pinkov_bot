@@ -5369,7 +5369,7 @@ async def main():
     
     # ТЕСТ: Принудительно запускаем рассылку при старте
     logger.info("🔄 Принудительный запуск рассылки при старте...")
-    await send_daily_tasks()
+    # await send_daily_tasks()
     
     # Запускаем планировщик
     scheduler.add_job(
@@ -5444,4 +5444,5 @@ async def main():
     
     await dp.start_polling(bot)
 if __name__ == "__main__":
+
     asyncio.run(main())
