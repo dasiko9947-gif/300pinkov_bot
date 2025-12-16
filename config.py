@@ -110,8 +110,8 @@ INVITE_CODE_TYPES = {
     "detox_sprint": {"name": "4-дневный спринт Детокс", "days": 4}
 }
 # Время отправки заданий
-TASK_TIME_HOUR = 13
-TASK_TIME_MINUTE = 9
+TASK_TIME_HOUR = 15
+TASK_TIME_MINUTE = 25
 REMINDER_TIME_HOUR = 18
 REMINDER_TIME_MINUTE = 30
 
@@ -122,3 +122,4 @@ PINK_FRIEND_LIMITS = {
     "premium": {"links": 10, "daily_sends": 30}
 
 }
+
