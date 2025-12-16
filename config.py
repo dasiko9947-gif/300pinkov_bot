@@ -111,7 +111,7 @@ INVITE_CODE_TYPES = {
 }
 # Время отправки заданий
 TASK_TIME_HOUR = 15
-TASK_TIME_MINUTE = 25
+TASK_TIME_MINUTE = 22
 REMINDER_TIME_HOUR = 18
 REMINDER_TIME_MINUTE = 30
 
@@ -122,4 +122,5 @@ PINK_FRIEND_LIMITS = {
     "premium": {"links": 10, "daily_sends": 30}
 
 }
+
 
