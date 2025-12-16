@@ -1,51 +1,4 @@
-import asyncio
-import logging
-import payments
-from datetime import datetime
-import random
-from aiogram import Bot, Dispatcher, F
-from aiogram import exceptions
-from aiogram.filters import Command, CommandStart
-from aiogram.types import Message, CallbackQuery
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.client.default import DefaultBotProperties
-from aiogram.types import (
-    Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,
-    ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove,
-    InlineQuery, InlineQueryResultArticle, InputTextMessageContent
-)
-import keyboards
-import config
-import utils
-import signal
-import sys
-import pytz
-from utils import (
-    get_user, save_user, update_user_activity, add_referral,
-    is_subscription_active, is_in_trial_period, get_trial_days_left,
-    update_user_rank, get_rank_info, get_referral_level, use_invite_code, add_subscription_days,
-    get_all_users, start_detox_sprint, get_sprint_task
-)
 
-from keyboards import (
-    get_main_menu, archetype_keyboard, task_keyboard, admin_keyboard,
-    get_payment_keyboard, get_my_rank_keyboard, get_my_referral_keyboard,
-    get_admin_invite_keyboard, get_invite_code_types_keyboard
-)
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.cron import CronTrigger
-from aiogram import exceptions
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
-# В начале файла добавь новые состояния
-class UserStates(StatesGroup):
-    waiting_for_archetype = State()
-    waiting_for_invite = State()
-    waiting_for_timezone = State()  # Новое состояние
-    waiting_for_ready = State()     # Новое состояние
-
-# Инициализация планировщика
-scheduler = AsyncIOScheduler(timezone=config.TIMEZONE)
 
 # pyright: reportAttributeAccessIssue=false
 # Настройка логирования
@@ -5167,3 +5120,4 @@ async def send_to_friend_main_menu(message: Message):
     if current_day == 0:
         # Если нет выполненных заданий
         await message.answer(
+
