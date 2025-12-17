@@ -23,7 +23,7 @@ from utils import (
     get_user, save_user, update_user_activity, add_referral,
     is_subscription_active, is_in_trial_period, get_trial_days_left,
     update_user_rank, get_rank_info, get_referral_level, use_invite_code, add_subscription_days,
-    get_all_users, start_detox_sprint, get_sprint_task
+    get_all_users
 )
 
 from keyboards import (
@@ -33,8 +33,6 @@ from keyboards import (
 )
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-from aiogram import exceptions
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 # В начале файла добавь новые состояния
 class UserStates(StatesGroup):
     waiting_for_archetype = State()
@@ -43,7 +41,8 @@ class UserStates(StatesGroup):
     waiting_for_ready = State()     # Новое состояние
 
 # Инициализация планировщика
-scheduler = AsyncIOScheduler(timezone=config.TIMEZONE)
+import pytz
+scheduler = AsyncIOScheduler(timezone=pytz.timezone(config.TIMEZONE))
 
 # pyright: reportAttributeAccessIssue=false
 # Настройка логирования
@@ -218,105 +217,69 @@ async def send_daily_tasks():
     finally:
         is_sending_tasks = False
 
+# УПРОСТИТЬ логику проверки:
 async def send_task_to_user(user_id: int, user_data: dict):
     """Отправляет задание конкретному пользователю"""
     try:
-        # ЛОГИКА ОТПРАВКИ ЗАДАНИЙ С УЧЕТОМ ЭТАПОВ
-        if user_data.get('sprint_type') and not user_data.get('sprint_completed'):
-            # Логика спринта (оставляем без изменений)
-            sprint_day = user_data.get('sprint_day', 1)
-            task_text = await utils.get_sprint_task(sprint_day)
-            
-            if task_text:
-                message_text = (
-                    f"⚡ <b>СПРИНТ: ДЕНЬ {sprint_day}/4</b>\n\n"
-                    f"<b>Задание дня #{sprint_day}</b>\n\n"
-                    f"{task_text}\n\n"
-                    f"💪 Твой шаг к цифровой свободе!\n"
-                    f"⏰ До 23:59 на выполнение\n\n"
-                    f"<i>Встретимся завтра в 9:00 ⏰</i>"
-                )
-                
-                await safe_send_message_optimized(
-                    user_id=user_id,
-                    text=message_text,
-                    reply_markup=keyboards.task_keyboard
-                )
-                
-                # Обновляем данные пользователя
-                user_data['last_task_sent'] = datetime.now().isoformat()
-                user_data['task_completed_today'] = False
-                await utils.save_user(user_id, user_data)
-                return True
-                
-        else:
-            # ОБЫЧНЫЕ ЗАДАНИЯ С УЧЕТОМ ЭТАПОВ
-            todays_tasks = await utils.get_todays_tasks(user_data)
-            
-            if todays_tasks:
-                task = todays_tasks[0]
-                
-                # ДЕБАГ: Логируем информацию
-                logger.info(f"📊 Отправка задания пользователю {user_id}: день {task['day']}, этап: {task.get('is_new_stage', False)}")
-                
-                # ПРОВЕРЯЕМ НОВЫЙ ЭТАП
-                should_notify = await utils.should_send_stage_notification(user_data, task['day'])
-                
-                if should_notify:
-                    stage_message = await utils.get_stage_message_for_user(
-                        task['day'], 
-                        user_data.get('archetype', 'spartan')
-                    )
-                    
-                    if stage_message:
-                        logger.info(f"🎊 Отправка уведомления о новом этапе пользователю {user_id}")
-                        
-                        # Отправляем сообщение о новом этапе
-                        stage_text = (
-                            f"🎊 <b>НОВЫЙ ЭТАП!</b>\n\n"
-                            f"{stage_message}\n\n"
-                            f"<i>Твое первое задание нового этапа ждет ниже 👇</i>"
-                        )
-                        
-                        await safe_send_message_optimized(
-                            user_id=user_id,
-                            text=stage_text,
-                            disable_web_page_preview=True
-                        )
-                        
-                        # Небольшая пауза между сообщениями
-                        await asyncio.sleep(1)
-                
-                # Отправляем само задание
-                message_text = (
-                    f"📋 <b>Задание на сегодня</b>\n\n"
-                    f"<b>День {task['day']}/300</b>\n\n"
-                    f"{task['data']['text']}\n\n"
-                    f"⏰ <b>До 23:59 на выполнение</b>\n\n"
-                    f"<i>Встретимся завтра в 9:00 ⏰</i>"
-                )
-                
-                await safe_send_message_optimized(
-                    user_id=user_id,
-                    text=message_text,
-                    reply_markup=keyboards.task_keyboard,
-                    disable_web_page_preview=True
-                )
-                
-                # Обновляем данные пользователя
-                user_data['last_task_sent'] = datetime.now().isoformat()
-                user_data['task_completed_today'] = False
-                await utils.save_user(user_id, user_data)
-                return True
+        logger.info(f"🔍 send_task_to_user: проверяю пользователя {user_id}")
         
-        return False
+        # Проверяем доступ к заданиям
+        has_subscription = await utils.is_subscription_active(user_data)
+        in_trial = await utils.is_in_trial_period(user_data)
+        
+        logger.info(f"📊 Статус пользователя {user_id}: sub={has_subscription}, trial={in_trial}")
+        
+        if not has_subscription and not in_trial:
+            logger.info(f"❌ Пользователь {user_id} не имеет доступа")
+            return False
+        
+        # Проверяем, может ли пользователь получить задание
+        can_receive = await utils.can_receive_new_task(user_data)
+        logger.info(f"🎯 Пользователь {user_id} может получить задание: {can_receive}")
+        
+        if not can_receive:
+            logger.info(f"⏸️ Пользователь {user_id} не может получить задание сейчас")
+            return False
+        
+        todays_tasks = await utils.get_todays_tasks(user_data)
+        logger.info(f"📋 Заданий для пользователя {user_id}: {len(todays_tasks)}")
+        
+        if not todays_tasks:
+            logger.warning(f"⚠️ Нет заданий для пользователя {user_id}")
+            return False
+        
+        task = todays_tasks[0]
+        logger.info(f"📝 Задание дня {task['day']}: {task['text'][:50]}...")
+        
+        message_text = (
+            f"📋 <b>Задание на сегодня</b>\n\n"
+            f"<b>День {task['day']}/300</b>\n\n"
+            f"{task['text']}\n\n"
+            f"⏰ <b>До 23:59 на выполнение</b>\n\n"
+            f"<i>Встретимся завтра в 9:00 ⏰</i>"
+        )
+        
+        logger.info(f"📤 Отправляю задание пользователю {user_id}")
+        
+        # Отправляем сообщение
+        await bot.send_message(
+            chat_id=user_id,
+            text=message_text,
+            reply_markup=keyboards.task_keyboard
+        )
+        
+        # Обновляем данные пользователя
+        from datetime import datetime
+        user_data['last_task_sent'] = datetime.now().isoformat()
+        user_data['task_completed_today'] = False
+        await utils.save_user(user_id, user_data)
+        
+        logger.info(f"✅ Задание отправлено пользователю {user_id}")
+        return True
         
     except Exception as e:
-        logger.error(f"❌ Ошибка отправки пользователю {user_id}: {e}")
+        logger.error(f"❌ Ошибка отправки пользователю {user_id}: {e}", exc_info=True)
         return False
-        logger.error(f"❌ Ошибка отправки пользователю {user_id}: {e}")
-        return False
-
 async def process_batch(tasks: list, current: int, total: int):
     """Обрабатывает батч задач и логирует прогресс"""
     try:
@@ -461,6 +424,7 @@ async def send_reminders():
             logger.error(f"❌ Ошибка напоминания пользователю {user_id}: {e}")
     
     logger.info(f"📊 Напоминания завершены: {sent_count} отправлено, {error_count} ошибок")
+
 async def check_midnight_reset():
     """Полуночный сброс и блокировка неподтвержденных пользователей"""
     logger.info("🕛 Выполняем полуночный сброс...")
@@ -469,178 +433,81 @@ async def check_midnight_reset():
     reset_count = 0
     blocked_count = 0
     
-    for user_id, user_data in users.items():
+    # Используем pytz.timezone для создания объекта часового пояса
+    default_timezone = pytz.timezone(config.TIMEZONE)
+    now = datetime.now(default_timezone)  # Теперь это правильный тип
+    
+    for user_id_str, user_data in users.items():
         try:
-            # Сбрасываем флаг выполнения задания
-            if user_data.get('task_completed_today'):
+            user_id = int(user_id_str)
+            
+            # Пропускаем неактивных пользователей
+            if not await utils.is_subscription_active(user_data) and not await utils.is_in_trial_period(user_data):
+                continue
+            
+            # ЕСЛИ ЗАДАНИЕ ВЫПОЛНЕНО СЕГОДНЯ - просто сбрасываем флаг
+            if user_data.get('task_completed_today', False):
                 user_data['task_completed_today'] = False
                 reset_count += 1
+                await utils.save_user(user_id, user_data)
+                logger.debug(f"✅ Сброшен флаг для пользователя {user_id}")
+                continue
             
-            # Блокируем пользователей, которые не отметили вчерашнее задание
-            if (user_data.get('last_task_sent') and 
-                not user_data.get('task_completed_today') and
-                await utils.is_subscription_active(user_data)):
+            # Получаем часовой пояс пользователя
+            user_timezone_str = user_data.get('timezone', config.TIMEZONE)
+            try:
+                user_timezone = pytz.timezone(user_timezone_str)
+            except:
+                user_timezone = default_timezone  # Если часовой пояс некорректный
+            
+            # Получаем время последнего задания
+            last_task_sent_str = user_data.get('last_task_sent')
+            if not last_task_sent_str:
+                continue
                 
-                # Отправляем сообщение о блокировке
-                message_text = (
-                    f"⏸️ <b>ПАУЗА</b>\n\n"
-                    f"Ты не отметил вчерашний вызов.\n\n"
-                    f"Дисциплина требует последовательности!\n"
-                    f"Вернись во вчерашнее сообщение и отметь «✅ Выполнил» или «⏭️ Пропустить» чтобы разблокировать новые задания.\n\n"
-                    f"<i>Каждый пропущенный день - отложенная победа!</i>"
-                )
+            try:
+                last_task_date_utc = datetime.fromisoformat(last_task_sent_str)
                 
-                await bot.send_message(chat_id=int(user_id), text=message_text)
-                blocked_count += 1
+                # Если у last_task_date_utc нет часового пояса, добавляем UTC
+                if last_task_date_utc.tzinfo is None:
+                    last_task_date_utc = pytz.UTC.localize(last_task_date_utc)
+                
+                # Конвертируем в часовой пояс пользователя
+                last_task_date_user = last_task_date_utc.astimezone(user_timezone)
+                user_now = now.astimezone(user_timezone)
+                
+                # Сравниваем ДАТЫ (без времени)
+                last_task_date_only = last_task_date_user.date()
+                user_today = user_now.date()
+                
+                # Если задание было СЕГОДНЯ (по времени пользователя) и не выполнено
+                if last_task_date_only == user_today:
+                    # Не блокируем - возможно пользователь еще выполнит сегодня
+                    logger.debug(f"⏳ Пользователь {user_id} еще может выполнить сегодняшнее задание")
+                    continue
+                    
+                # Если задание было ВЧЕРА или раньше и не выполнено - блокируем
+                elif last_task_date_only < user_today:
+                    message_text = (
+                        f"⏸️ <b>ПАУЗА</b>\n\n"
+                        f"Ты не отметил вчерашний вызов.\n\n"
+                        f"Дисциплина требует последовательности!\n"
+                        f"Вернись во вчерашнее сообщение и отметь «✅ Выполнил» или «⏭️ Пропустить» чтобы разблокировать новые задания.\n\n"
+                        f"<i>Каждый пропущенный день - отложенная победа!</i>"
+                    )
+                    
+                    await bot.send_message(chat_id=user_id, text=message_text)
+                    blocked_count += 1
+                    logger.info(f"⏸️ Пользователь {user_id} заблокирован (задание от {last_task_date_only})")
+                    
+            except Exception as e:
+                logger.error(f"❌ Ошибка обработки даты у пользователя {user_id}: {e}")
                 
         except Exception as e:
-            logger.error(f"❌ Ошибка сброса пользователя {user_id}: {e}")
+            logger.error(f"❌ Ошибка сброса пользователя {user_id_str}: {e}")
     
     logger.info(f"📊 Сброс завершен: {reset_count} сброшено, {blocked_count} заблокировано")
 # ========== ОСНОВНЫЕ КОМАНДЫ ==========
-
-@dp.message(Command("check_duplicates"))
-async def check_duplicates_command(message: Message):
-    """Проверка пользователей с возможными дубликатами заданий"""
-    user = message.from_user
-    if not user or user.id != config.ADMIN_ID:
-        return
-    
-    users = await utils.get_all_users()
-    problem_users = []
-    
-    for user_id, user_data in users.items():
-        if user_data.get('last_task_sent'):
-            try:
-                last_sent = datetime.fromisoformat(user_data['last_task_sent'])
-                today = datetime.now().date()
-                last_sent_date = last_sent.date()
-                
-                # Если задание отправлено сегодня, но не выполнено - возможный дубликат
-                if last_sent_date == today and not user_data.get('task_completed_today'):
-                    problem_users.append((user_id, user_data))
-            except:
-                pass
-    
-    if problem_users:
-        report = f"⚠️ <b>Найдено пользователей с возможными дубликатами: {len(problem_users)}</b>\n\n"
-        for user_id, user_data in problem_users[:10]:  # Показываем первые 10
-            report += f"👤 {user_data.get('first_name', 'User')} (ID: {user_id})\n"
-        
-        if len(problem_users) > 10:
-            report += f"\n... и еще {len(problem_users) - 10} пользователей"
-    else:
-        report = "✅ Проблем с дубликатами не найдено"
-    
-    await message.answer(report)
-@dp.message(Command("debug_tasks"))
-async def debug_tasks_command(message: Message):
-    """Отладочная информация о заданиях"""
-    user = message.from_user
-    if not user:
-        return
-        
-    user_id = user.id
-    user_data = await utils.get_user(user_id)
-    
-    if not user_data:
-        await message.answer("Сначала зарегистрируйся через /start")
-        return
-    
-    # Получаем все задания
-    all_tasks = await utils.get_all_tasks()
-    
-    # Текущий день пользователя
-    current_day = user_data.get('current_day', 0) + 1
-    archetype = user_data.get('archetype', 'spartan')
-    
-    # Ищем задание для текущего дня
-    task_id, task = await utils.get_task_by_day(current_day, archetype)
-    
-    debug_info = (
-        f"🔧 <b>ОТЛАДОЧНАЯ ИНФОРМАЦИЯ</b>\n\n"
-        f"👤 <b>Пользователь:</b>\n"
-        f"• ID: {user_id}\n"
-        f"• Текущий день: {user_data.get('current_day', 0)}\n"
-        f"• Следующий день: {current_day}\n"
-        f"• Архетип: {archetype}\n\n"
-        f"📊 <b>Задания в базе:</b>\n"
-        f"• Всего заданий: {len(all_tasks)}\n"
-        f"• Найдено для дня {current_day}: {'ДА' if task else 'НЕТ'}\n\n"
-    )
-    
-    # Показываем задания для этого дня и архетипа
-    matching_tasks = []
-    for task_key, task_data in all_tasks.items():
-        if task_data.get('day_number') == current_day and task_data.get('archetype') == archetype:
-            matching_tasks.append(task_data)
-    
-    debug_info += f"<b>Задания для дня {current_day} ({archetype}):</b> {len(matching_tasks)}\n"
-    
-    for i, task_data in enumerate(matching_tasks):
-        debug_info += f"{i+1}. {task_data.get('text', '')}\n"
-    
-    if not matching_tasks:
-        debug_info += "\n❌ <b>Нет заданий для этого дня и архетипа!</b>"
-    
-    await message.answer(debug_info)
-@dp.message(Command("create_test_tasks"))
-async def create_test_tasks_command(message: Message):
-    """Создание тестовых заданий"""
-    user = message.from_user
-    if not user or user.id != config.ADMIN_ID:
-        return
-        
-    # Загружаем текущие задания
-    tasks = await utils.get_all_tasks()
-    
-    # Добавляем тестовые задания для дней 1-10
-    test_tasks = {
-        "task_1_spartan": {
-            "day_number": 1, "archetype": "spartan", 
-            "text": "Сделай 20 отжиманий сразу после пробуждения",
-            "created_at": datetime.now().isoformat(),
-            "created_by": user.id
-        },
-        "task_1_amazon": {
-            "day_number": 1, "archetype": "amazon",
-            "text": "Сделай 15 приседаний сразу после пробуждения",
-            "created_at": datetime.now().isoformat(),
-            "created_by": user.id
-        },
-        "task_2_spartan": {
-            "day_number": 2, "archetype": "spartan",
-            "text": "Выпей стакан воды перед первым приемом пищи", 
-            "created_at": datetime.now().isoformat(),
-            "created_by": user.id
-        },
-        "task_2_amazon": {
-            "day_number": 2, "archetype": "amazon",
-            "text": "Сделай 5-минутную утреннюю растяжку",
-            "created_at": datetime.now().isoformat(),
-            "created_by": user.id
-        },
-        "task_3_spartan": {
-            "day_number": 3, "archetype": "spartan",
-            "text": "Откажись от сладкого на весь день",
-            "created_at": datetime.now().isoformat(), 
-            "created_by": user.id
-        },
-        "task_3_amazon": {
-            "day_number": 3, "archetype": "amazon",
-            "text": "Приготовь здоровый завтрак самостоятельно",
-            "created_at": datetime.now().isoformat(),
-            "created_by": user.id
-        }
-    }
-    
-    # Добавляем задания в базу
-    tasks.update(test_tasks)
-    
-    # Сохраняем
-    await utils.write_json(config.TASKS_FILE, tasks)
-    
-    await message.answer(f"✅ Создано {len(test_tasks)} тестовых заданий!")
 
 @dp.message(Command("reset_me"))
 async def reset_me_command(message: Message, state: FSMContext):
@@ -691,522 +558,6 @@ async def reset_me_command(message: Message, state: FSMContext):
         "Спасибо, что был с нами! 👋"
     )
 
-@dp.message(Command("test_stage"))
-@dp.message(Command("test_stage"))
-async def test_stage_command(message: Message):
-    """Тестирование уведомления о новом этапе"""
-    user = message.from_user
-    if not user or user.id != config.ADMIN_ID:
-        return
-        
-    if not message.text:
-        await message.answer("❌ Текст сообщения пуст")
-        return
-    
-    args = message.text.split()
-    if len(args) < 3:
-        await message.answer(
-            "📊 <b>Тестирование уведомления о этапе</b>\n\n"
-            "Использование: <code>/test_stage ДЕНЬ АРХЕТИП</code>\n"
-            "Примеры:\n"
-            "<code>/test_stage 1 spartan</code> - тест начала этапа для Спартанца\n"
-            "<code>/test_stage 31 amazon</code> - тест этапа 2 для Амазонки\n"
-            "<code>/test_stage 61 spartan</code> - тест этапа 3 для Спартанца\n\n"
-            "Доступные дни начала этапов:\n"
-            "• 1 - Поле битвы\n"
-            "• 31 - Дофаминовая блокада\n" 
-            "• 61 - Нейронная гвардия\n"
-            "• 91 - Спартанский дух\n"
-            "• 121 - Одиночный пикет\n"
-            "• 151 - Палатка помощи\n"
-            "• 181 - Финансофая реформа\n"
-            "• 211 - Зона дискомфорта\n"
-            "• 241 - Социальный прорыв\n"
-            "• 271 - Революция сознания"
-        )
-        return
-    
-    try:
-        day_number = int(args[1])
-        archetype = args[2].lower()
-        
-        if archetype not in ['spartan', 'amazon']:
-            await message.answer("❌ Архетип должен быть 'spartan' или 'amazon'")
-            return
-        
-        # Используем функцию из utils.py
-        stage_message = await utils.get_stage_message_for_user(day_number, archetype)
-        
-        if stage_message:
-            await message.answer(
-                f"✅ <b>Тест уведомления о этапе</b>\n\n"
-                f"• День: {day_number}\n"
-                f"• Архетип: {archetype}\n\n"
-                f"{stage_message}",
-                disable_web_page_preview=True
-            )
-        else:
-            await message.answer(
-                f"❌ <b>Для дня {day_number} этап не найден</b>\n\n"
-                f"Проверьте:\n"
-                f"1. Что файл stages.json существует\n"
-                f"2. Что день соответствует началу этапа\n"
-                f"3. Что архетип указан правильно\n\n"
-                f"Используйте /debug_stage {day_number} для отладки"
-            )
-            
-    except ValueError:
-        await message.answer("❌ Неверный номер дня. Используйте число.")
-    except Exception as e:
-        logger.error(f"❌ Ошибка в test_stage: {e}")
-        await message.answer(f"❌ Ошибка: {str(e)[:100]}")
-# ========== ТЕСТОВАЯ КОМАНДА ДЛЯ ПОЛУЧЕНИЯ ЗАДАНИЙ ОДНО ЗА ДРУГИМ ==========
-
-@dp.message(Command("test_tasks"))
-async def test_tasks_sequence(message: Message):
-    """
-    Тестовая команда для последовательного просмотра заданий
-    Показывает задания одно за другим с возможностью навигации
-    """
-    user = message.from_user
-    if not user:
-        return
-        
-    # Проверяем права (можно ограничить только админом или всем)
-    if user.id != config.ADMIN_ID:
-        await message.answer("⛔ Эта команда доступна только администратору для тестирования")
-        return
-    
-    user_id = user.id
-    user_data = await utils.get_user(user_id)
-    
-    if not user_data:
-        await message.answer("❌ Сначала зарегистрируйся через /start")
-        return
-    
-    archetype = user_data.get('archetype', 'spartan')
-    
-    # Получаем все задания для выбранного архетипа
-    all_tasks = await utils.get_all_tasks()
-    user_tasks = []
-    
-    for task_id, task_data in all_tasks.items():
-        if task_data.get('archetype') == archetype:
-            user_tasks.append({
-                'day': task_data.get('day_number', 0),
-                'text': task_data.get('text', ''),
-                'data': task_data
-            })
-    
-    # Сортируем по дням
-    user_tasks.sort(key=lambda x: x['day'])
-    
-    if not user_tasks:
-        await message.answer("❌ Нет заданий для этого архетипа в базе")
-        return
-    
-    # Сохраняем тестовое состояние в данных пользователя
-    user_data['test_mode'] = {
-        'active': True,
-        'tasks': user_tasks,
-        'current_index': 0,
-        'total': len(user_tasks)
-    }
-    await utils.save_user(user_id, user_data)
-    
-    # Показываем первое задание
-    await show_test_task(message, user_data)
-
-async def show_test_task(message_or_callback, user_data: dict):
-    """Показывает текущее тестовое задание с навигацией"""
-    # Определяем откуда пришел вызов
-    if isinstance(message_or_callback, Message):
-        message = message_or_callback
-        user_id = message.from_user.id # type: ignore
-    elif isinstance(message_or_callback, CallbackQuery):
-        callback = message_or_callback
-        message = callback.message
-        user_id = callback.from_user.id
-    else:
-        return
-    
-    test_mode = user_data.get('test_mode', {})
-    
-    if not test_mode.get('active'):
-        if message:
-            await message.answer("❌ Тестовый режим не активен")
-        return
-    
-    tasks = test_mode.get('tasks', [])
-    current_index = test_mode.get('current_index', 0)
-    total_tasks = test_mode.get('total', 0)
-    
-    if not tasks or current_index >= total_tasks:
-        if message:
-            await message.answer("✅ Все задания просмотрены!")
-        return
-    
-    current_task = tasks[current_index]
-    
-    # Создаем клавиатуру навигации
-    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-    
-    keyboard_buttons = []
-    
-    # Кнопки навигации
-    nav_buttons = []
-    if current_index > 0:
-        nav_buttons.append(InlineKeyboardButton(text="◀️ Предыдущее", callback_data="test_prev_task"))
-    
-    nav_buttons.append(InlineKeyboardButton(text=f"{current_index + 1}/{total_tasks}", callback_data="test_task_info"))
-    
-    if current_index < total_tasks - 1:
-        nav_buttons.append(InlineKeyboardButton(text="Следующее ▶️", callback_data="test_next_task"))
-    
-    if nav_buttons:
-        keyboard_buttons.append(nav_buttons)
-    
-    # Кнопки управления
-    keyboard_buttons.append([
-        InlineKeyboardButton(text="📋 Режим обычного задания", callback_data="test_show_as_normal"),
-        InlineKeyboardButton(text="❌ Завершить тест", callback_data="test_end")
-    ])
-    
-    keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
-    
-    # Отправляем задание
-    task_message = (
-        f"🧪 <b>ТЕСТОВЫЙ РЕЖИМ: ЗАДАНИЕ #{current_index + 1}</b>\n\n"
-        f"📅 <b>День {current_task['day']}/300</b>\n\n"
-        f"{current_task['text']}\n\n"
-        f"🏷️ <b>Архетип:</b> {user_data.get('archetype', 'spartan')}\n"
-        f"📊 <b>Порядковый номер:</b> {current_index + 1} из {total_tasks}\n\n"
-        f"<i>Используй кнопки для навигации между заданиями</i>"
-    )
-    
-    if message:
-        await message.answer(task_message, reply_markup=keyboard)
-
-@dp.callback_query(F.data == "test_prev_task")
-async def test_prev_task_handler(callback: CallbackQuery):
-    """Переход к предыдущему заданию"""
-    user = callback.from_user
-    if not user:
-        await callback.answer("Ошибка")
-        return
-        
-    user_id = user.id
-    user_data = await utils.get_user(user_id)
-    
-    if not user_data:
-        await callback.answer("Ошибка")
-        return
-    
-    test_mode = user_data.get('test_mode', {})
-    if not test_mode.get('active'):
-        await callback.answer("Тестовый режим не активен")
-        return
-    
-    current_index = test_mode.get('current_index', 0)
-    if current_index > 0:
-        test_mode['current_index'] = current_index - 1
-        user_data['test_mode'] = test_mode
-        await utils.save_user(user_id, user_data)
-        
-        # Удаляем старое сообщение
-        if callback.message:
-            try:
-                await callback.message.delete()
-            except:
-                pass
-        
-        # Показываем новое задание
-        await show_test_task(callback, user_data)
-    
-    await callback.answer()
-
-@dp.callback_query(F.data == "test_next_task")
-async def test_next_task_handler(callback: CallbackQuery):
-    """Переход к следующему заданию"""
-    user = callback.from_user
-    if not user:
-        await callback.answer("Ошибка")
-        return
-        
-    user_id = user.id
-    user_data = await utils.get_user(user_id)
-    
-    if not user_data:
-        await callback.answer("Ошибка")
-        return
-    
-    test_mode = user_data.get('test_mode', {})
-    if not test_mode.get('active'):
-        await callback.answer("Тестовый режим не активен")
-        return
-    
-    current_index = test_mode.get('current_index', 0)
-    total_tasks = test_mode.get('total', 0)
-    
-    if current_index < total_tasks - 1:
-        test_mode['current_index'] = current_index + 1
-        user_data['test_mode'] = test_mode
-        await utils.save_user(user_id, user_data)
-        
-        # Удаляем старое сообщение
-        if callback.message:
-            try:
-                await callback.message.delete()
-            except:
-                pass
-        
-        # Показываем новое задание
-        await show_test_task(callback, user_data)
-    
-    await callback.answer()
-
-@dp.callback_query(F.data == "test_show_as_normal")
-async def test_show_as_normal_handler(callback: CallbackQuery):
-    """Показывает текущее задание в формате обычного задания"""
-    user = callback.from_user
-    if not user:
-        await callback.answer("Ошибка")
-        return
-        
-    user_id = user.id
-    user_data = await utils.get_user(user_id)
-    
-    if not user_data:
-        await callback.answer("Ошибка")
-        return
-    
-    test_mode = user_data.get('test_mode', {})
-    if not test_mode.get('active'):
-        await callback.answer("Тестовый режим не активен")
-        return
-    
-    tasks = test_mode.get('tasks', [])
-    current_index = test_mode.get('current_index', 0)
-    
-    if current_index < len(tasks):
-        current_task = tasks[current_index]
-        
-        # Форматируем как обычное задание
-        task_message = (
-            f"📋 <b>Задание на сегодня</b>\n\n"
-            f"<b>День {current_task['day']}/300</b>\n\n"
-            f"{current_task['text']}\n\n"
-            f"⏰ <b>До 23:59 на выполнение</b>\n\n"
-            f"<i>Отмечай выполнение кнопками ниже 👇</i>"
-        )
-        
-        # Создаем кнопки как у обычного задания
-        from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-        
-        keyboard = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(text="⚔️ ВЫПОЛНИЛ", callback_data="test_complete_task"),
-                    InlineKeyboardButton(text="⏭️ ОТЛОЖИТЬ", callback_data="test_postpone_task")
-                ],
-                [
-                    InlineKeyboardButton(text="📤 Пинок другу", callback_data="test_send_to_friend"),
-                    InlineKeyboardButton(text="🔙 Назад к тесту", callback_data="test_back_to_test")
-                ]
-            ]
-        )
-        
-        if callback.message:
-            await callback.message.edit_text(task_message, reply_markup=keyboard)
-    
-    await callback.answer()
-
-@dp.callback_query(F.data == "test_back_to_test")
-async def test_back_to_test_handler(callback: CallbackQuery):
-    """Возврат к тестовому режиму из обычного формата"""
-    user = callback.from_user
-    if not user:
-        await callback.answer("Ошибка")
-        return
-        
-    user_id = user.id
-    user_data = await utils.get_user(user_id)
-    
-    if not user_data:
-        await callback.answer("Ошибка")
-        return
-    
-    # Показываем текущее тестовое задание
-    await show_test_task(callback, user_data)
-    await callback.answer()
-
-@dp.callback_query(F.data == "test_task_info")
-async def test_task_info_handler(callback: CallbackQuery):
-    """Информация о текущем тестовом задании"""
-    user = callback.from_user
-    if not user:
-        await callback.answer("Ошибка")
-        return
-        
-    user_id = user.id
-    user_data = await utils.get_user(user_id)
-    
-    if not user_data:
-        await callback.answer("Ошибка")
-        return
-    
-    test_mode = user_data.get('test_mode', {})
-    tasks = test_mode.get('tasks', [])
-    current_index = test_mode.get('current_index', 0)
-    total_tasks = test_mode.get('total', 0)
-    
-    if current_index < len(tasks):
-        current_task = tasks[current_index]
-        
-        info_text = (
-            f"ℹ️ <b>ИНФОРМАЦИЯ О ЗАДАНИИ</b>\n\n"
-            f"📅 <b>День:</b> {current_task['day']}\n"
-            f"📊 <b>Позиция:</b> {current_index + 1}/{total_tasks}\n"
-            f"🏷️ <b>Архетип:</b> {user_data.get('archetype', 'spartan')}\n"
-            f"📝 <b>Текст:</b>\n{current_task['text']}\n\n"
-            f"<i>Это тестовый режим для проверки заданий</i>"
-        )
-        
-        await callback.answer(info_text, show_alert=True)
-    else:
-        await callback.answer("❌ Задание не найдено", show_alert=True)
-
-@dp.callback_query(F.data == "test_end")
-async def test_end_handler(callback: CallbackQuery):
-    """Завершение тестового режима"""
-    user = callback.from_user
-    if not user:
-        await callback.answer("Ошибка")
-        return
-        
-    user_id = user.id
-    user_data = await utils.get_user(user_id)
-    
-    if not user_data:
-        await callback.answer("Ошибка")
-        return
-    
-    # Удаляем тестовый режим
-    if 'test_mode' in user_data:
-        del user_data['test_mode']
-        await utils.save_user(user_id, user_data)
-    
-    if callback.message:
-        # Создаем правильную клавиатуру для главного меню
-        main_menu_keyboard = keyboards.get_main_menu(user_id)
-        
-        await callback.message.edit_text(
-            "✅ <b>Тестовый режим завершен</b>\n\n"
-            "Все задания просмотрены. Возвращаюсь в обычный режим."
-        )
-        
-        # Отправляем отдельное сообщение с главным меню
-        await callback.message.answer(
-            "Главное меню:",
-            reply_markup=main_menu_keyboard
-        )
-    
-    await callback.answer()
-
-@dp.callback_query(F.data == "test_complete_task")
-async def test_complete_task_handler(callback: CallbackQuery):
-    """Имитация выполнения задания в тестовом режиме"""
-    await callback.answer(
-        "✅ В тестовом режиме задания не сохраняются\n\n"
-        "В обычном режиме это кнопка отмечает задание как выполненное.",
-        show_alert=True
-    )
-
-@dp.callback_query(F.data == "test_postpone_task")
-async def test_postpone_task_handler(callback: CallbackQuery):
-    """Имитация откладывания задания в тестовом режиме"""
-    await callback.answer(
-        "⏭️ В тестовом режиме задания не откладываются\n\n"
-        "В обычном режиме эта кнопка откладывает задание на потом.",
-        show_alert=True
-    )
-
-@dp.callback_query(F.data == "test_send_to_friend")
-async def test_send_to_friend_handler(callback: CallbackQuery):
-    """Имитация отправки задания другу в тестовом режиме"""
-    await callback.answer(
-        "📤 В тестовом режиме отправка не работает\n\n"
-        "В обычном режиме эта кнопка позволяет поделиться заданием с другом.",
-        show_alert=True
-    )
-
-# Добавим также команду для быстрого просмотра заданий по дням
-@dp.message(Command("task"))
-async def show_specific_task(message: Message):
-    """Показывает конкретное задание по номеру дня"""
-    user = message.from_user
-    if not user:
-        return
-        
-    if user.id != config.ADMIN_ID:
-        await message.answer("⛔ Эта команда доступна только администратору")
-        return
-    
-    args = message.text.split() if message.text else []
-    if len(args) < 2:
-        await message.answer("Использование: /task [номер_дня]\nПример: /task 15")
-        return
-    
-    try:
-        day_number = int(args[1])
-        user_data = await utils.get_user(user.id)
-        
-        if not user_data:
-            await message.answer("❌ Сначала зарегистрируйся через /start")
-            return
-        
-        archetype = user_data.get('archetype', 'spartan')
-        task_id, task = await utils.get_task_by_day(day_number, archetype)
-        
-        if task:
-            await message.answer(
-                f"📋 <b>Задание дня {day_number}</b>\n\n"
-                f"{task['text']}\n\n"
-                f"🏷️ Архетип: {archetype}\n"
-                f"🔢 Номер задания в базе: {task_id}"
-            )
-        else:
-            await message.answer(f"❌ Задание для дня {day_number} ({archetype}) не найдено")
-            
-    except ValueError:
-        await message.answer("❌ Неверный номер дня. Используйте число.")
-    except Exception as e:
-        await message.answer(f"❌ Ошибка: {e}")
-@dp.message(Command("sprint_off"))
-async def sprint_off_command(message: Message):
-    """Команда для отключения спринта"""
-    user = message.from_user
-    if not user:
-        return
-        
-    user_id = user.id
-    user_data = await utils.get_user(user_id)
-    
-    if user_data and user_data.get('sprint_type'):
-        user_data['sprint_type'] = None
-        user_data['sprint_day'] = None
-        user_data['sprint_completed'] = True
-        user_data['current_day'] = 4
-        
-        await utils.save_user(user_id, user_data)
-        await message.answer(
-            "🎯 <b>Спринт завершен досрочно!</b>\n\n"
-            "Ты переходишь к основному челленджу 300 ПИНКОВ!\n\n"
-            "Завтра в 9:00 получишь первое задание основного пути!",
-            reply_markup=keyboards.get_main_menu(user_id)
-        )
-    else:
-        await message.answer("❌ Спринт не активен.")
 
 @dp.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
@@ -1342,56 +693,6 @@ async def process_timezone_selection(message: Message, state: FSMContext):
         reply_markup=archetype_keyboard
     )
     await state.set_state(UserStates.waiting_for_archetype)
-
-@dp.message(UserStates.waiting_for_archetype)
-async def process_archetype_selection(message: Message, state: FSMContext):
-    """ШАГ 4: Обработка выбора архетипа"""
-    user = message.from_user
-    if not user:
-        await message.answer("Ошибка: не удалось получить информацию о пользователе")
-        return
-        
-    if not message.text:
-        await message.answer("Пожалуйста, выбери архетип с клавиатуры:")
-        return
-        
-    archetype_map = {
-        "⚔️ спартанец": "spartan",
-        "🛡️ амазонка": "amazon"
-    }
-    
-    archetype = None
-    text_lower = message.text.lower()
-    for key, value in archetype_map.items():
-        if key in text_lower:
-            archetype = value
-            break
-    
-    if not archetype:
-        await message.answer("Пожалуйста, выбери архетип с клавиатуры:")
-        return
-    
-    # Сохраняем архетип в состоянии
-    await state.update_data(archetype=archetype)
-    
-    # ШАГ 5: Финальное подтверждение
-    from keyboards import get_ready_keyboard  # Добавляем импорт здесь
-    
-    archetype_name = "Спартанца" if archetype == "spartan" else "Амазонки"
-    
-    await message.answer(
-        f"🎉 <b>Отличный выбор!</b>\n\n"
-        f"Ты выбрал путь {archetype_name}!\n\n"
-        f"⚠️ <b>Важное напоминание:</b>\n"
-        f"• Задания приходят в 9:00 по твоему времени\n"
-        f"• Время на выполнение до 23:59\n"
-        f"• Честность перед собой - основа системы\n"
-        f"• Пропуски превращаются в долги\n\n"
-        f"💪 <b>Ты готов начать свой путь к сильной версии себя?</b>\n"
-        f"Следующим сообщением ты получишь первое задание!",
-        reply_markup=get_ready_keyboard()
-    )
-    await state.set_state(UserStates.waiting_for_ready)
 
 @dp.message(UserStates.waiting_for_ready)
 async def process_ready_confirmation(message: Message, state: FSMContext):
@@ -1533,6 +834,7 @@ async def process_archetype(message: Message, state: FSMContext):
 
 # В функции show_todays_task заменим:
 
+# ОБНОВЛЯЕМ обработчик для нового текста кнопки
 @dp.message(F.text.contains("Задание на сегодня"))
 async def show_todays_task(message: Message):
     """Улучшенный обработчик кнопки задания"""
@@ -1548,39 +850,6 @@ async def show_todays_task(message: Message):
         return
     
     logger.info(f"👤 Пользователь {user_id} запросил задание")
-    
-    # Проверяем спринт
-    if user_data.get('sprint_type') and not user_data.get('sprint_completed'):
-        sprint_day = user_data.get('sprint_day', 1)
-        task_text = await utils.get_sprint_task(sprint_day)
-        
-        if task_text:
-            message_text = (
-                f"⚡ <b>СПРИНТ: ДЕНЬ {sprint_day}/4</b>\n\n"
-                f"<b>Задание дня #{sprint_day}</b>\n\n"
-                f"{task_text}\n\n"
-                f"💪 Твой шаг к цифровой свободе!\n"
-                f"⏰ До 23:59 на выполнение"
-            )
-            await message.answer(message_text, reply_markup=keyboards.task_keyboard)
-        else:
-            await message.answer("❌ Задание спринта не найдено!")
-        
-        await utils.update_user_activity(user_id)
-        return
-    
-    # Проверяем отложенные задания после 300 дней
-    if await utils.has_postponed_tasks_after_300(user_data):
-        postponed_task = await utils.get_next_postponed_task(user_data)
-        if postponed_task:
-            task_message = await format_postponed_task_message(postponed_task)
-            await message.answer(
-                task_message, 
-                reply_markup=keyboards.task_keyboard,
-                disable_web_page_preview=True
-            )
-            await utils.update_user_activity(user_id)
-            return
     
     # Обычные задания
     todays_tasks = await utils.get_todays_tasks(user_data)
@@ -1599,23 +868,6 @@ async def show_todays_task(message: Message):
     
     # Отправляем основное задание
     for task in todays_tasks:
-        # ПРОВЕРЯЕМ НОВЫЙ ЭТАП
-        if task.get('is_new_stage', False):
-            stage_message = await utils.get_stage_message_for_user(
-                task['day'], 
-                user_data.get('archetype', 'spartan')
-            )
-            
-            if stage_message:
-                # Сначала отправляем сообщение о новом этапе
-                await message.answer(
-                    f"🎊 <b>НОВЫЙ ЭТАП!</b>\n\n{stage_message}",
-                    disable_web_page_preview=True
-                )
-                # Небольшая задержка для лучшего UX
-                await asyncio.sleep(1)
-        
-        # Затем отправляем само задание
         task_message = await format_task_message(
             task['data'], 
             task['day'], 
@@ -1631,73 +883,14 @@ async def show_todays_task(message: Message):
 
 async def format_task_message(task_data, day, task_type):
     """Форматирует сообщение с заданием"""
-    if task_type == 'postponed_final':
-        return (
-            f"📋 <b>ОТЛОЖЕННОЕ ЗАДАНИЕ</b>\n\n"
-            f"<b>День {day}/300+</b>\n\n"
-            f"{task_data['text']}\n\n"
-            f"⏰ <b>Это задание было отложено ранее</b>\n"
-            f"Выполни его чтобы продолжить!\n\n"
-            f"<i>Время на выполнение: до 23:59</i>"
-        )
-    else:
-        return (
-            f"📋 <b>Задание на сегодня</b>\n\n"
-            f"<b>День {day}/300</b>\n\n"
-            f"{task_data['text']}\n\n"
-            f"⏰ <b>До 23:59 на выполнение</b>\n\n"
-            f"<i>Отмечай выполнение кнопками ниже 👇</i>"
-        )
-
-async def format_postponed_task_message(postponed_task):
-    """Форматирует сообщение для отложенного задания"""
     return (
-        f"📋 <b>ОТЛОЖЕННОЕ ЗАДАНИЕ</b>\n\n"
-        f"<b>День {postponed_task['day']}/300+</b>\n\n"
-        f"{postponed_task['text']}\n\n"
-        f"⏰ <b>Это задание было отложено ранее</b>\n"
-        f"Выполни его чтобы продолжить!\n\n"
-        f"<i>Время на выполнение: до 23:59</i>"
+        f"📋 <b>Задание на сегодня</b>\n\n"
+        f"<b>День {day}/300</b>\n\n"
+        f"{task_data['text']}\n\n"
+        f"⏰ <b>До 23:59 на выполнение</b>\n\n"
+        f"<i>Отмечай выполнение кнопками ниже 👇</i>"
     )
 
-@dp.message(Command("debug_me"))
-async def debug_me_command(message: Message):
-    """Отладочная информация о пользователе"""
-    user = message.from_user
-    if not user:
-        return
-        
-    user_id = user.id
-    user_data = await utils.get_user(user_id)
-    
-    if not user_data:
-        await message.answer("❌ Пользователь не найден в базе")
-        return
-    
-    # Получаем сегодняшние задания
-    todays_tasks = await utils.get_todays_tasks(user_data)
-    postponed_tasks = await utils.get_postponed_tasks_after_300(user_data)
-    
-    debug_info = (
-        f"🔧 <b>ОТЛАДОЧНАЯ ИНФОРМАЦИЯ</b>\n\n"
-        f"👤 <b>Пользователь:</b>\n"
-        f"• ID: {user_id}\n"
-        f"• Текущий день: {user_data.get('current_day', 0)}\n"
-        f"• Следующий день: {user_data.get('current_day', 0) + 1}\n"
-        f"• Выполнено заданий: {user_data.get('completed_tasks', 0)}\n"
-        f"• Архетип: {user_data.get('archetype', 'не установлен')}\n\n"
-        f"📊 <b>Статус заданий:</b>\n"
-        f"• Основных заданий сегодня: {len(todays_tasks)}\n"
-        f"• Отложенных заданий: {len(postponed_tasks)}\n"
-        f"• Задание выполнено сегодня: {user_data.get('task_completed_today', False)}\n"
-        f"• Последнее задание отправлено: {user_data.get('last_task_sent', 'никогда')}\n\n"
-        f"💎 <b>Подписка:</b>\n"
-        f"• Активна: {await utils.is_subscription_active(user_data)}\n"
-        f"• Пробный период: {await utils.is_in_trial_period(user_data)}\n"
-        f"• В спринте: {user_data.get('sprint_type') and not user_data.get('sprint_completed')}\n"
-    )
-    
-    await message.answer(debug_info)
 
 # Обработчик активации инвайт-кода из нового раздела
 @dp.callback_query(F.data == "activate_invite")
@@ -1814,6 +1007,7 @@ async def show_referral_from_legion(callback: CallbackQuery):
         pass
 # Обработчик кнопки "⚔️ ВЫПОЛНИЛ" 
 # В обработчике task_completed обновим логику:
+# ЗАМЕНИТЬ весь обработчик на упрощенную версию:
 @dp.message(F.text == "⚔️ ВЫПОЛНИЛ")
 async def task_completed(message: Message):
     user = message.from_user
@@ -1826,30 +1020,19 @@ async def task_completed(message: Message):
     if not user_data:
         return
     
-    # Проверяем тип задания: основное или отложенное после 300 дней
+    # ПРОВЕРЯЕМ ТОЛЬКО ОСНОВНОЕ ЗАДАНИЕ
     todays_tasks = await utils.get_todays_tasks(user_data)
-    postponed_tasks = await utils.get_postponed_tasks_after_300(user_data)
     
-    if not todays_tasks and not postponed_tasks:
+    if not todays_tasks:
         await message.answer("❌ Нет активных заданий для выполнения!")
         return
     
-    if todays_tasks:
-        # Основное задание
-        current_task = todays_tasks[0]
-        user_data['current_day'] = user_data.get('current_day', 0) + 1
-        user_data['completed_tasks'] = user_data.get('completed_tasks', 0) + 1
-        user_data['task_completed_today'] = True
-        
-        message_suffix = "\n\n🎉 <b>Отлично! Ты идеально справляешься!</b>"
-            
-    elif postponed_tasks:
-        # Отложенное задание после 300 дней
-        current_task = postponed_tasks[0]
-        user_data = await utils.complete_postponed_task(user_data)
-        user_data['completed_tasks'] = user_data.get('completed_tasks', 0) + 1
-        message_suffix = "\n\n💫 <b>Отложенное задание выполнено! Молодец!</b>"
+    # Обновляем прогресс
+    user_data['current_day'] = user_data.get('current_day', 0) + 1
+    user_data['completed_tasks'] = user_data.get('completed_tasks', 0) + 1
+    user_data['task_completed_today'] = True
     
+    # Обновляем ранг
     rank_updated = await utils.update_user_rank(user_data)
     
     await utils.save_user(user_id, user_data)
@@ -1860,70 +1043,15 @@ async def task_completed(message: Message):
         rank_info = await utils.get_rank_info(current_rank)
         rank_message = f"\n\n🏆 <b>Поздравляем! Новый ранг: {rank_info.get('name', '')}</b>"
     
-    completed_tasks = user_data.get('completed_tasks', 0)
-    
     await message.answer(
         f"🎉 <b>ОТЛИЧНАЯ РАБОТА!</b>\n\n"
-        f"Еще один шаг к сильной версии себя!{message_suffix}"
+        f"Еще один шаг к сильной версии себя!\n"
         f"{rank_message}\n\n"
         f"<i>Сила воли, как мышца - растет с каждой тренировкой!</i>",
         reply_markup=keyboards.get_main_menu(user_id)
     )
     
     await utils.update_user_activity(user_id)
-
-# В обработчике postpone_task_handler:
-
-@dp.message(F.text == "⏭️ ОТЛОЖИТЬ")
-async def postpone_task_handler(message: Message):
-    user = message.from_user
-    if not user:
-        return
-        
-    user_id = user.id
-    user_data = await utils.get_user(user_id)
-    
-    if not user_data:
-        await message.answer("Сначала зарегистрируйся через /start")
-        return
-    
-    todays_tasks = await utils.get_todays_tasks(user_data)
-    if not todays_tasks:
-        await message.answer("❌ Нет активных заданий для откладывания!")
-        return
-    
-    # Пытаемся отложить задание
-    user_data, success = await utils.postpone_task(user_data)
-    
-    if success:
-        await utils.save_user(user_id, user_data)
-        
-        motivation_messages = [
-            "💫 Задание отложено! Вернешься к нему после 300-го дня!",
-            "🔄 Отложил на потом! Сосредоточься на текущих задачах!",
-            "⚡ Иногда лучше отложить, чем пропустить! Вернешься к нему позже!",
-            "🎯 Задание сохранено! Оно вернётся после выполнения 300го дня",
-        ]
-        
-        motivation = random.choice(motivation_messages)
-        
-        await message.answer(
-            f"⏭️ <b>Задание отложено</b>\n\n"
-            f"{motivation}",
-            reply_markup=keyboards.get_main_menu(user_id)
-        )
-    else:
-        # Достигнут лимит отложенных заданий
-        await message.answer(
-            f"❌ <b>Достигнут лимит отложенных заданий!</b>\n\n"
-            f"Максимум можно отложить {config.MAX_POSTPONED_TASKS} заданий.\n"
-            f"Выполни некоторые отложенные задания чтобы освободить место.\n\n"
-            f"💡 <b>Совет:</b> Лучше выполнить задание сегодня, чем откладывать!",
-            reply_markup=keyboards.get_main_menu(user_id)
-        )
-    
-    await utils.update_user_activity(user_id)
-
 
 # ОБНОВЛЯЕМ обработчик "Подписка 💎"
 @dp.message(F.text == "Подписка 💎")
@@ -2176,60 +1304,6 @@ async def get_referral_link(callback: CallbackQuery):
     await callback.answer()
 
 
-@dp.message(Command("debug_payments"))
-async def debug_payments_command(message: Message):
-    """Отладочная информация о платежной системе"""
-    user = message.from_user
-    if not user:
-        return
-        
-    debug_info = (
-        f"🔧 <b>ОТЛАДКА ПЛАТЕЖНОЙ СИСТЕМЫ</b>\n\n"
-        f"🤖 <b>Настройки бота:</b>\n"
-        f"• Username: @{(await bot.get_me()).username}\n\n"
-        f"💳 <b>ЮKassa настройки:</b>\n"
-        f"• Shop ID: {config.YOOKASSA_SHOP_ID[:10]}...\n"
-        f"• Secret Key: {config.YOOKASSA_SECRET_KEY[:10]}...\n"
-        f"• Return URL: {config.YOOKASSA_RETURN_URL}\n\n"
-        f"💰 <b>Тарифы:</b>\n"
-    )
-    
-    for tariff_id, tariff in config.TARIFFS.items():
-        debug_info += f"• {tariff['name']}: {tariff['price']} руб. ({tariff['days']} дней)\n"
-    
-    await message.answer(debug_info)
-
-@dp.message(Command("check_payments"))
-async def check_payments_command(message: Message):
-    """Проверка созданных платежей"""
-    user = message.from_user
-    if not user or user.id != config.ADMIN_ID:
-        return
-        
-    payments = await utils.read_json(config.PAYMENTS_FILE)
-    
-    if not payments:
-        await message.answer("❌ В базе нет платежей")
-        return
-    
-    message_text = f"📊 <b>Платежи в базе:</b> {len(payments)}\n\n"
-    
-    for i, (payment_id, payment_data) in enumerate(list(payments.items())[:5]):
-        status = payment_data.get('status', 'unknown')
-        amount = payment_data.get('amount', 0)
-        user_id = payment_data.get('user_id', 'unknown')
-        tariff_id = payment_data.get('tariff_id', 'unknown')
-        
-        message_text += (
-            f"{i+1}. ID: {payment_id[:8]}...\n"
-            f"   💰 {amount} руб. | 👤 {user_id}\n"
-            f"   📦 {tariff_id} | 📊 {status}\n\n"
-        )
-    
-    if len(payments) > 5:
-        message_text += f"... и еще {len(payments) - 5} платежей"
-    
-    await message.answer(message_text)
 @dp.callback_query(F.data.startswith("tariff_"))
 async def process_tariff_selection(callback: CallbackQuery):
     """Обработка выбора тарифа с улучшенной обработкой ошибок"""
@@ -2779,21 +1853,6 @@ async def admin_users(message: Message):
     
     await message.answer(users_text, reply_markup=get_admin_users_keyboard())
 
-@dp.message(F.text == "📢 Рассылка")
-async def admin_broadcast(message: Message):
-    """Рассылка сообщений"""
-    user = message.from_user
-    if not user or user.id != config.ADMIN_ID:
-        return
-        
-    await message.answer(
-        "📢 <b>Рассылка сообщений</b>\n\n"
-        "Для создания рассылки отправьте сообщение в формате:\n"
-        "<code>РАССЫЛКА|заголовок|текст сообщения</code>\n\n"
-        "Пример:\n"
-        "<code>РАССЫЛКА|Важное обновление|Дорогие пользователи, появились новые функции!</code>"
-    )
-
 @dp.message(F.text == "💳 Платежи")
 async def admin_payments(message: Message):
     """Управление платежами"""
@@ -3321,17 +2380,24 @@ async def activate_invite_command(message: Message, state: FSMContext):
 
 @dp.message(UserStates.waiting_for_invite)
 async def process_invite_code(message: Message, state: FSMContext):
-    """Обработка введенного инвайт-кода - ИСПРАВЛЕННАЯ ВЕРСИЯ"""
+    """Обработка введенного инвайт-кода - УПРОЩЕННАЯ ВЕРСИЯ"""
     user = message.from_user
     if not user:
         await message.answer("Ошибка: пользователь не найден")
         return
-        
-    if not message.text:
+    
+    # ПРОВЕРЯЕМ, ЧТО message.text НЕ NONE
+    if not message.text or message.text is None:
         await message.answer("Пожалуйста, введите инвайт-код:")
         return
-    
+        
     invite_code = message.text.strip()
+    
+    # ДОПОЛНИТЕЛЬНАЯ ПРОВЕРКА НА ПУСТОЙ СТРОКУ
+    if not invite_code:
+        await message.answer("Пожалуйста, введите инвайт-код:")
+        return
+        
     user_id = user.id
     user_data = await utils.get_user(user_id)
     
@@ -3340,56 +2406,22 @@ async def process_invite_code(message: Message, state: FSMContext):
         await state.clear()
         return
     
-    # ОДНОКРАТНАЯ АКТИВАЦИЯ С ПРОВЕРКОЙ
     success, result = await utils.use_invite_code(invite_code, user_id)
     
     if success:
         invite_data = result
+        days = invite_data.get('days', 30)
+        updated_user_data = await utils.add_subscription_days(user_data, days)
+        await utils.save_user(user_id, updated_user_data)
         
-        if invite_data.get('type') == 'detox_sprint':
-            # Запускаем спринт
-            updated_user_data = await utils.start_detox_sprint(user_data)
-            await utils.save_user(user_id, updated_user_data)
-            
-            # СРАЗУ ПОКАЗЫВАЕМ ПЕРВОЕ ЗАДАНИЕ
-            sprint_day = 1
-            task_text = await utils.get_sprint_task(sprint_day)
-            
-            await message.answer(
-                "🎯 <b>Добро пожаловать в 4-дневный спринт ЦИФРОВОЙ ДЕТОКС!</b>\n\n"
-                "Твой путь к цифровой свободе начинается!\n\n"
-                "💪 <b>Первое задание уже ждет тебя ниже!</b>",
-                reply_markup=keyboards.get_main_menu(user.id)
-            )
-            
-            # ОТПРАВЛЯЕМ ЗАДАНИЕ СРАЗУ
-            if task_text:
-                task_message = (
-                    f"⚡ <b>СПРИНТ: ДЕНЬ 1/4</b>\n\n"
-                    f"<b>Задание дня #1</b>\n\n"
-                    f"{task_text}\n\n"
-                    f"💪 Твой шаг к цифровой свободе!\n"
-                    f"⏰ До 23:59 на выполнение"
-                )
-                await message.answer(task_message, reply_markup=keyboards.task_keyboard)
-                
-        else:
-            # Старая логика для обычных кодов
-            days = invite_data.get('days', 30)
-            updated_user_data = await utils.add_subscription_days(user_data, days)
-            await utils.save_user(user_id, updated_user_data)
-            
-            await message.answer(
-                f"✅ <b>Инвайт-код активирован!</b>\n\n"
-                f"Вам добавлено <b>{days}</b> дней подписки.\n"
-                f"Тип: {invite_data.get('name', 'Подписка')}\n\n"
-                f"Теперь у вас есть доступ ко всем заданиям! 🎉",
-                reply_markup=keyboards.get_main_menu(user.id)
-            )
-            
-        # ОЧИЩАЕМ СОСТОЯНИЕ ПОСЛЕ УСПЕШНОЙ АКТИВАЦИИ
+        await message.answer(
+            f"✅ <b>Инвайт-код активирован!</b>\n\n"
+            f"Вам добавлено <b>{days}</b> дней подписки.\n"
+            f"Тип: {invite_data.get('name', 'Подписка')}\n\n"
+            f"Теперь у вас есть доступ ко всем заданиям! 🎉",
+            reply_markup=keyboards.get_main_menu(user.id)
+        )
         await state.clear()
-        
     else:
         error_message = result
         await message.answer(
@@ -3397,10 +2429,8 @@ async def process_invite_code(message: Message, state: FSMContext):
             f"{error_message}\n\n"
             f"Попробуйте другой код или обратитесь в поддержку: {config.SUPPORT_USERNAME}"
         )
-        # НЕ очищаем состояние при ошибке - пользователь может попробовать другой код
     
     await utils.update_user_activity(user_id)
-
 
 # ========== ОБРАБОТЧИКИ РЕФЕРАЛЬНОЙ ПРОГРАММЫ ==========
 
@@ -4223,334 +3253,6 @@ async def admin_send_message(message: Message):
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
 
-@dp.message(F.text.startswith("РАССЫЛКА|"))
-async def admin_broadcast_handler(message: Message):
-    """Обработка рассылки"""
-    user = message.from_user
-    if not user or user.id != config.ADMIN_ID:
-        return
-    
-    if not message.text:
-        await message.answer("❌ Ошибка: текст сообщения пуст")
-        return
-    
-    try:
-        # Используем безопасное разбиение строки
-        text = message.text
-        parts = text.split("|") if text else []
-        
-        if len(parts) < 3:
-            await message.answer("❌ Неверный формат. Используйте: РАССЫЛКА|заголовок|текст")
-            return
-        
-        title = parts[1].strip()
-        broadcast_text = "|".join(parts[2:]).strip()
-        
-        if not title or not broadcast_text:
-            await message.answer("❌ Введите заголовок и текст рассылки")
-            return
-        
-        users = await utils.get_all_users()
-        success_count = 0
-        error_count = 0
-        
-        # Отправляем сообщение о начале рассылки
-        progress_msg = await message.answer(f"📢 <b>Начинаем рассылку:</b> {title}\n\nОтправлено: 0/{len(users)}")
-        
-        for i, (user_id, user_data) in enumerate(users.items(), 1):
-            try:
-                await bot.send_message(
-                    chat_id=int(user_id),
-                    text=f"📢 <b>{title}</b>\n\n{broadcast_text}"
-                )
-                success_count += 1
-                
-                # Обновляем прогресс каждые 10 сообщений
-                if i % 10 == 0:
-                    await progress_msg.edit_text(
-                        f"📢 <b>Рассылка:</b> {title}\n\n"
-                        f"Отправлено: {i}/{len(users)}\n"
-                        f"✅ Успешно: {success_count}\n"
-                        f"❌ Ошибок: {error_count}"
-                    )
-                
-                # Небольшая задержка чтобы не спамить
-                await asyncio.sleep(0.1)
-                
-            except Exception as e:
-                error_count += 1
-                logger.error(f"Ошибка отправки пользователю {user_id}: {e}")
-        
-        await progress_msg.edit_text(
-            f"✅ <b>Рассылка завершена!</b>\n\n"
-            f"📢 {title}\n"
-            f"👥 Всего пользователей: {len(users)}\n"
-            f"✅ Успешно: {success_count}\n"
-            f"❌ Ошибок: {error_count}"
-        )
-        
-    except Exception as e:
-        await message.answer(f"❌ Ошибка при рассылке: {e}")
-
-@dp.message(F.text.startswith("ЗАДАНИЕ|"))
-async def admin_add_task_handler(message: Message):
-    """Добавление задания через текстовую команду"""
-    user = message.from_user
-    if not user or user.id != config.ADMIN_ID:
-        return
-    
-    if not message.text:
-        await message.answer("❌ Ошибка: текст сообщения пуст")
-        return
-    
-    try:
-        # Используем безопасное разбиение строки
-        text = message.text
-        parts = text.split("|") if text else []
-        
-        if len(parts) < 4:
-            await message.answer("❌ Неверный формат. Используйте: ЗАДАНИЕ|день|архетип|текст")
-            return
-        
-        day_number = int(parts[1].strip())
-        archetype = parts[2].strip().lower()
-        task_text = "|".join(parts[3:]).strip()
-        
-        if archetype not in ['spartan', 'amazon']:
-            await message.answer("❌ Неверный архетип. Используйте: spartan или amazon")
-            return
-        
-        if not task_text:
-            await message.answer("❌ Введите текст задания")
-            return
-        
-        # Загружаем существующие задания
-        tasks = await utils.read_json(config.TASKS_FILE)
-        
-        # Создаем ID для нового задания
-        task_id = f"task_{day_number}_{archetype}"
-        
-        # Добавляем задание
-        tasks[task_id] = {
-            'day_number': day_number,
-            'archetype': archetype,
-            'text': task_text,
-            'created_at': datetime.now().isoformat(),
-            'created_by': user.id
-        }
-        
-        # Сохраняем задания
-        await utils.write_json(config.TASKS_FILE, tasks)
-        
-        archetype_emoji = "🛡️" if archetype == 'spartan' else "⚔️"
-        await message.answer(
-            f"✅ <b>Задание добавлено!</b>\n\n"
-            f"День: {day_number}\n"
-            f"Архетип: {archetype_emoji} {archetype}\n"
-            f"Текст: {task_text}"
-        )
-        
-    except ValueError:
-        await message.answer("❌ Неверный номер дня")
-    except Exception as e:
-        await message.answer(f"❌ Ошибка при добавлении задания: {e}")
-    """Обработка рассылки"""
-    user = message.from_user
-    if not user or user.id != config.ADMIN_ID:
-        return
-    
-    try:
-        parts = message.text.split("|")
-        if len(parts) < 3:
-            await message.answer("❌ Неверный формат. Используйте: РАССЫЛКА|заголовок|текст")
-            return
-        
-        title = parts[1].strip()
-        broadcast_text = "|".join(parts[2:]).strip()
-        
-        if not title or not broadcast_text:
-            await message.answer("❌ Введите заголовок и текст рассылки")
-            return
-        
-        users = await utils.get_all_users()
-        success_count = 0
-        error_count = 0
-        
-        # Отправляем сообщение о начале рассылки
-        progress_msg = await message.answer(f"📢 <b>Начинаем рассылку:</b> {title}\n\nОтправлено: 0/{len(users)}")
-        
-        for i, (user_id, user_data) in enumerate(users.items(), 1):
-            try:
-                await bot.send_message(
-                    chat_id=int(user_id),
-                    text=f"📢 <b>{title}</b>\n\n{broadcast_text}"
-                )
-                success_count += 1
-                
-                # Обновляем прогресс каждые 10 сообщений
-                if i % 10 == 0:
-                    await progress_msg.edit_text(
-                        f"📢 <b>Рассылка:</b> {title}\n\n"
-                        f"Отправлено: {i}/{len(users)}\n"
-                        f"✅ Успешно: {success_count}\n"
-                        f"❌ Ошибок: {error_count}"
-                    )
-                
-                # Небольшая задержка чтобы не спамить
-                await asyncio.sleep(0.1)
-                
-            except Exception as e:
-                error_count += 1
-                logger.error(f"Ошибка отправки пользователю {user_id}: {e}")
-        
-        await progress_msg.edit_text(
-            f"✅ <b>Рассылка завершена!</b>\n\n"
-            f"📢 {title}\n"
-            f"👥 Всего пользователей: {len(users)}\n"
-            f"✅ Успешно: {success_count}\n"
-            f"❌ Ошибок: {error_count}"
-        )
-        
-    except Exception as e:
-        await message.answer(f"❌ Ошибка при рассылке: {e}")    
-
-async def complete_detox_sprint(user_data):
-    """Завершает спринт и предлагает продолжить"""
-    user_data['current_day'] = 4  # 4/300 дней
-    user_data['completed_tasks'] = 4  # Добавляем выполненные задания
-    user_data['sprint_completed'] = True
-    user_data['sprint_type'] = None
-    user_data['sprint_day'] = None
-    user_data['awaiting_trial_payment'] = True  # Флаг ожидания оплаты пробного периода
-    
-    # Обновляем ранг после спринта
-    await update_user_rank(user_data)
-    
-    return user_data
-# ========== ОБРАБОТЧИКИ ПРОПУСКОВ ЗАДАНИЙ ==========
-
-@dp.callback_query(F.data == "sprint_continue")
-async def sprint_continue_handler(callback: CallbackQuery):
-    """Обработка продолжения после спринта"""
-    user = callback.from_user
-    if not user:
-        return
-        
-    if not callback.message:
-        await callback.answer("Ошибка: сообщение не найдено")
-        return
-        
-    user_id = user.id
-    user_data = await utils.get_user(user_id)
-    
-    if not user_data:
-        return
-    
-    # Показываем тариф "пробный за 1 рубль"
-    tariff = config.TARIFFS["trial_ruble"]
-    
-    message_text = (
-        "🎉 <b>ОТЛИЧНАЯ РАБОТА!</b>\n\n"
-        "Ты завершил 4-дневный спринт и уже прошел 4/300 дней!\n\n"
-        "💎 <b>Продолжи путь к сильной версии себя:</b>\n"
-        f"• 3 дня пробного периода за 1 рубль\n"
-        f"• Затем автоматическая подписка за {config.TARIFFS['month']['price']} руб./месяц\n"
-        f"• Отменить можно в любой момент\n\n"
-        f"<b>Оплата:</b> {tariff['price']} руб. на карту:\n"
-        f"<code>{config.BANK_CARD}</code>\n\n"
-        f"После оплаты отправьте скриншот чека в поддержку: {config.SUPPORT_USERNAME}"
-    )
-    
-    try:
-        await callback.message.edit_text(message_text)
-    except Exception as e:
-        logger.error(f"Ошибка при редактировании сообщения: {e}")
-        await callback.answer("Не удалось обновить сообщение")
-    
-    await callback.answer()
-    """Обработка продолжения после спринта"""
-    user = callback.from_user
-    if not user:
-        return
-        
-    user_id = user.id
-    user_data = await utils.get_user(user_id)
-    
-    if not user_data:
-        return
-    
-    # Показываем тариф "пробный за 1 рубль"
-    tariff = config.TARIFFS["trial_ruble"]
-    
-    message_text = (
-        "🎉 <b>ОТЛИЧНАЯ РАБОТА!</b>\n\n"
-        "Ты завершил 4-дневный спринт и уже прошел 4/300 дней!\n\n"
-        "💎 <b>Продолжи путь к сильной версии себя:</b>\n"
-        f"• 3 дня пробного периода за 1 рубль\n"
-        f"• Затем автоматическая подписка за {config.TARIFFS['month']['price']} руб./месяц\n"
-        f"• Отменить можно в любой момент\n\n"
-        f"<b>Оплата:</b> {tariff['price']} руб. на карту:\n"
-        f"<code>{config.BANK_CARD}</code>\n\n"
-        f"После оплаты отправьте скриншот чека в поддержку: {config.SUPPORT_USERNAME}"
-    )
-    
-    await callback.message.edit_text(message_text)
-    await callback.answer()
-
-@dp.callback_query(F.data == "sprint_trial_offer")
-async def sprint_trial_offer_handler(callback: CallbackQuery):
-    """Обработка принятия предложения"""
-    if not callback.message:
-        await callback.answer("Ошибка")
-        return
-        
-    tariff = config.TARIFFS["trial_ruble"]
-    
-    message_text = (
-        "🎉 <b>Отличный выбор!</b>\n\n"
-        f"<b>Ваш специальный тариф:</b>\n"
-        f"• 3 дня пробного периода за {tariff['price']} рубль\n"
-        f"• Затем автоматическое продление за {tariff['auto_renewal_price']} руб./месяц\n"
-        f"• Экономия {config.TARIFFS['month']['price'] - tariff['auto_renewal_price']} рублей!\n\n"
-        f"<b>Для активации:</b>\n"
-        f"1. Переведите {tariff['price']} руб. на карту:\n"
-        f"<code>{config.BANK_CARD}</code>\n"
-        f"2. Отправьте скриншот чека в поддержку: {config.SUPPORT_USERNAME}\n\n"
-        f"<i>После оплаты мы активируем ваш пробный период и специальную цену!</i>"
-    )
-    
-    try:
-        await callback.message.edit_text(message_text)
-    except Exception as e:
-        logger.error(f"Ошибка: {e}")
-        await callback.message.answer(message_text)
-    
-    await callback.answer()
-
-@dp.callback_query(F.data == "sprint_decline")
-async def sprint_decline_handler(callback: CallbackQuery):
-    """Обработка отказа от предложения"""
-    if not callback.message:
-        await callback.answer("Ошибка")
-        return
-        
-    message_text = (
-        "👋 <b>Понимаем, возможно сейчас не лучшее время</b>\n\n"
-        "Твой прогресс сохранен - ты на 4/300 дней!\n\n"
-        "Если передумаешь - специальное предложение будет ждать тебя в разделе:\n"
-        "<b>💎 Моя подписка</b>\n\n"
-        "Удачи на пути к сильной версии себя! 💪"
-    )
-    
-    try:
-        await callback.message.edit_text(message_text)
-    except Exception as e:
-        logger.error(f"Ошибка: {e}")
-        await callback.message.answer(message_text)
-    
-    await callback.answer()
-
-# ========== обработчики прогресса и рефералов ==========
 @dp.callback_query(F.data == "show_referral_from_progress")
 async def show_referral_from_progress(callback: CallbackQuery):
     """Показывает реферальную программу из раздела прогресса"""
@@ -4777,11 +3479,6 @@ async def show_progress_handler(update):
         for i, (privilege, link) in enumerate(privileges_with_links, 1):
             message_text += f"{i}. {privilege}\n"
         message_text += "\n"
-    
-    # Предупреждение о долгах
-    if postponed_count > 0:
-        message_text += f"<b>⚠️ У тебя {postponed_count} отложенных заданий!</b>\n"
-        message_text += "Они вернутся после 300 задания.\n\n"
     
     # Мотивационное сообщение
     if completed_tasks == 0:
@@ -5145,43 +3842,6 @@ async def back_to_task_handler(message: Message):
     # Показываем текущее задание
     await show_todays_task(message)
 
-
-@dp.message(F.text == "📤 Пинок другу")
-async def send_to_friend_main_menu(message: Message):
-    """Пинок другу из главного меню"""
-    user = message.from_user
-    if not user:
-        return
-        
-    user_id = user.id
-    user_data = await utils.get_user(user_id)
-    
-    if not user_data:
-        await message.answer("Сначала зарегистрируйся через /start")
-        return
-    
-    current_day = user_data.get('current_day', 0)
-    
-    if current_day == 0:
-        # Если нет выполненных заданий
-        await message.answer(
-            "📤 <b>Пинок другу</b>\n\n"
-            "Пригласи друга в челлендж «300 ПИНКОВ»!\n\n"
-            "Выбери способ отправки:",
-            reply_markup=keyboards.get_send_to_friend_keyboard()
-        )
-    else:
-        # Если есть выполненные задания
-        await message.answer(
-            "🎯 <b>Пинок другу</b>\n\n"
-            "Отправь другу одно из своих выполненных заданий!\n"
-            "Он получит пробное задание и сможет присоединиться к челленджу.\n\n"
-            f"Ты выполнил уже {current_day} пинков!",
-            reply_markup=keyboards.get_pink_list_keyboard(user_data)
-        )
-    
-    await utils.update_user_activity(user_id)
-
 @dp.callback_query(F.data == "back_to_task")
 async def back_to_task_callback(callback: CallbackQuery):
     """Возврат к заданию из inline клавиатуры"""
@@ -5352,7 +4012,73 @@ async def inline_query_handler(inline_query: InlineQuery):
     if results:
         await inline_query.answer(results, cache_time=1, is_personal=True)
 
-
+@dp.message(Command("checkme"))
+async def check_me_command(message: Message):
+    """Проверка данных пользователя"""
+    if not message or not message.from_user:
+        await message.answer("❌ Ошибка: не удалось получить информацию о пользователе")
+        return
+    
+    user = message.from_user
+    user_id = user.id
+    
+    # Сначала регистрируем пользователя если его нет
+    user_data = await utils.get_user(user_id)
+    
+    if not user_data:
+        # Создаем временного пользователя для теста
+        user_data = {
+            "user_id": user_id,
+            "username": user.username or "",
+            "first_name": user.first_name or "",
+            "last_name": user.last_name or "",
+            "archetype": "spartan",  # по умолчанию
+            "timezone": "Europe/Moscow",
+            "current_day": 0,
+            "completed_tasks": 0,
+            "rank": "putnik",
+            "created_at": datetime.now().isoformat(),
+            "referrals": [],
+            "referral_earnings": 0,
+            "last_task_sent": None,
+            "task_completed_today": False,
+            "debts": [],
+            "last_activity": datetime.now().isoformat()
+        }
+        await utils.save_user(user_id, user_data)
+        await message.answer("⚠️ Создал временную запись пользователя для теста")
+    
+    # Проверяем статус подписки
+    has_subscription = await utils.is_subscription_active(user_data)
+    in_trial = await utils.is_in_trial_period(user_data)
+    
+    # Проверяем задачи
+    todays_tasks = await utils.get_todays_tasks(user_data)
+    
+    debug_info = (
+        f"🔍 <b>ПРОВЕРКА ДАННЫХ</b>\n\n"
+        f"👤 Пользователь: {user.first_name}\n"
+        f"🆔 ID: {user_id}\n"
+        f"📅 Создан: {user_data.get('created_at', 'неизвестно')}\n"
+        f"🎯 Архетип: {user_data.get('archetype', 'не установлен')}\n"
+        f"📊 Текущий день: {user_data.get('current_day', 0)}\n"
+        f"✅ Выполнено: {user_data.get('completed_tasks', 0)}\n"
+        f"💎 Подписка активна: {has_subscription}\n"
+        f"🆓 Пробный период: {in_trial}\n"
+        f"📅 Последнее задание: {user_data.get('last_task_sent', 'никогда')}\n"
+        f"✅ Задание выполнено сегодня: {user_data.get('task_completed_today', False)}\n"
+        f"📋 Сегодняшних заданий: {len(todays_tasks)}\n"
+    )
+    
+    # Проверяем функции доступа
+    can_receive = await utils.can_receive_new_task(user_data)
+    debug_info += f"📤 Может получить задание: {can_receive}\n"
+    
+    if todays_tasks:
+        task = todays_tasks[0]
+        debug_info += f"📝 Задание дня: {task.get('day', '?')} - {task.get('text', 'нет текста')[:50]}...\n"
+    
+    await message.answer(debug_info)
 # В конец bot.py можно добавить обработчик вебхуков
 @dp.message(F.text == "/webhook")
 async def setup_webhook(message: Message):
@@ -5363,14 +4089,40 @@ async def setup_webhook(message: Message):
     
     # Здесь можно добавить логику настройки вебхука
     await message.answer("Вебхук для ЮKassa можно настроить через панель администратора ЮKassa")
-
+@dp.message(Command("check_scheduler"))
+async def check_scheduler_command(message: Message):
+    """Проверить состояние планировщика"""
+    try:
+        jobs = scheduler.get_jobs()
+        
+        if not jobs:
+            await message.answer("ℹ️ Нет активных задач в планировщике")
+            return
+        
+        info = "📅 <b>АКТИВНЫЕ ЗАДАЧИ В ПЛАНИРОВЩИКЕ:</b>\n\n"
+        
+        for job in jobs:
+            next_run = job.next_run_time
+            if next_run:
+                moscow_tz = pytz.timezone('Europe/Moscow')
+                next_run_msk = next_run.astimezone(moscow_tz)
+                next_run_str = next_run_msk.strftime('%Y-%m-%d %H:%M:%S')
+            else:
+                next_run_str = "не запланировано"
+            
+            info += f"• <b>{job.id}</b>\n"
+            info += f"  Следующий запуск: {next_run_str}\n"
+            info += f"  Триггер: {job.trigger}\n\n"
+        
+        await message.answer(info)
+        
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {e}")
 async def main():
     logger.info("Бот запускается...")
     
     # ТЕСТ: Принудительно запускаем рассылку при старте
-    logger.info("🔄 Принудительный запуск рассылки при старте...")
-    # await send_daily_tasks()
-    
+    logger.info("🔄 Принудительный запуск рассылки при старте...")    
     # Запускаем планировщик
     scheduler.add_job(
         send_daily_tasks,
@@ -5444,5 +4196,4 @@ async def main():
     
     await dp.start_polling(bot)
 if __name__ == "__main__":
-
     asyncio.run(main())

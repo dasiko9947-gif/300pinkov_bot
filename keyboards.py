@@ -35,9 +35,8 @@ task_keyboard = ReplyKeyboardMarkup(
 admin_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="📊 Статистика"), KeyboardButton(text="👥 Пользователи")],
-        [KeyboardButton(text="📢 Рассылка"), KeyboardButton(text="💳 Платежи")],
-        [KeyboardButton(text="🎫 Инвайт-коды"), KeyboardButton(text="➕ Добавить задание")],
-        [KeyboardButton(text="🎯 Тест рангов"), KeyboardButton(text="🔙 Главное меню")]
+        [KeyboardButton(text="💳 Платежи"), KeyboardButton(text="🎫 Инвайт-коды")],
+        [KeyboardButton(text="🔙 Главное меню")]
     ],
     resize_keyboard=True
 )

@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 TIMEZONE = "Europe/Moscow"
-BOT_TOKEN = os.getenv('TELEGRAM_TOKEN')
+BOT_TOKEN = os.getenv('BOT_TOKEN')
 ADMIN_ID = int(os.getenv('ADMIN_ID', '1296962464'))
 BANK_CARD = os.getenv('BANK_CARD', '2200 1234 5678 9010')
 SUPPORT_USERNAME = os.getenv('SUPPORT_USERNAME', '@admin')
@@ -18,7 +18,7 @@ USERS_FILE = BASE_DIR / 'users_data.json'
 TASKS_FILE = BASE_DIR / 'tasks_data.json'
 PAYMENTS_FILE = BASE_DIR / 'payments_data.json'
 INVITE_CODES_FILE = BASE_DIR / 'invite_codes.json'
-STAGES_FILE = BASE_DIR / "stages.json" 
+
 # Тарифы
 TARIFFS = {
     "month": {"name": "Месячная подписка", "price": 300, "days": 30},
@@ -110,18 +110,13 @@ INVITE_CODE_TYPES = {
     "detox_sprint": {"name": "4-дневный спринт Детокс", "days": 4}
 }
 # Время отправки заданий
-TASK_TIME_HOUR = 15
-TASK_TIME_MINUTE = 32
+TASK_TIME_HOUR = 9
+TASK_TIME_MINUTE = 0
 REMINDER_TIME_HOUR = 18
 REMINDER_TIME_MINUTE = 30
 
-MAX_POSTPONED_TASKS = 300
 # Лимиты для "Пинка другу"
 PINK_FRIEND_LIMITS = {
     "free": {"links": 3, "daily_sends": 3},
     "premium": {"links": 10, "daily_sends": 30}
-
 }
-
-
-
