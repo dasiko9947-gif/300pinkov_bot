@@ -4118,6 +4118,7 @@ async def check_scheduler_command(message: Message):
         
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
+
 async def main():
     logger.info("Бот запускается...")
     
@@ -4157,43 +4158,6 @@ async def main():
     logger.info("📅 Планировщик запущен")
     
     await dp.start_polling(bot)
-    logger.info("Бот запускается...")
-    await dp.start_polling(bot)
-    logger.info("Бот запускается...")
-    
-    # Запускаем планировщик
-    scheduler.add_job(
-        send_daily_tasks,
-        trigger=CronTrigger(
-            hour=config.TASK_TIME_HOUR,
-            minute=config.TASK_TIME_MINUTE,
-            timezone=config.TIMEZONE
-        ),
-        id="daily_tasks"
-    )
-    
-    scheduler.add_job(
-        send_reminders,
-        trigger=CronTrigger(
-            hour=config.REMINDER_TIME_HOUR,
-            minute=config.REMINDER_TIME_MINUTE,
-            timezone=config.TIMEZONE
-        ),
-        id="reminders"
-    )
-    
-    scheduler.add_job(
-        check_midnight_reset,
-        trigger=CronTrigger(
-            hour=0, minute=0,  # Полночь
-            timezone=config.TIMEZONE
-        ),
-        id="midnight_reset"
-    )
-    
-    scheduler.start()
-    logger.info("📅 Планировщик запущен")
-    
-    await dp.start_polling(bot)
+
 if __name__ == "__main__":
     asyncio.run(main())

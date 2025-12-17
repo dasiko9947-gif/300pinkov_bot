@@ -3,6 +3,7 @@ import uuid
 from yookassa import Payment, Configuration
 import config
 from datetime import datetime
+import utils  # ДОБАВИТЬ ЭТОТ ИМПОРТ
 
 # Настройка ЮKassa
 Configuration.account_id = config.YOOKASSA_SHOP_ID
@@ -76,20 +77,17 @@ async def create_yookassa_payment(amount, description, user_id, tariff_id):
 
 async def save_payment_data(payment_data):
     """Сохраняет данные платежа"""
-    import utils
     payments = await utils.read_json(config.PAYMENTS_FILE)
     payments[payment_data['payment_id']] = payment_data
     await utils.write_json(config.PAYMENTS_FILE, payments)
 
 async def get_payment_data(payment_id):
     """Получает данные платежа"""
-    import utils
     payments = await utils.read_json(config.PAYMENTS_FILE)
     return payments.get(payment_id)
 
 async def update_payment_status(payment_id, status):
     """Обновляет статус платежа"""
-    import utils
     payments = await utils.read_json(config.PAYMENTS_FILE)
     if payment_id in payments:
         payments[payment_id]['status'] = status
