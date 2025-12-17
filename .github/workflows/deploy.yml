@@ -39,10 +39,61 @@ jobs:
             pip install --upgrade pip
             pip install -r requirements.txt
 
-            # Обновляем .env
-            echo "TELEGRAM_TOKEN=${{ secrets.TELEGRAM_TOKEN }}" > .env
+            # Обновляем .env ВСЕМИ необходимыми переменными
+            cat > .env << 'ENVFILE'
+            # Telegram
+            TELEGRAM_TOKEN=${{ secrets.TELEGRAM_TOKEN }}
+            ADMIN_ID=${{ secrets.ADMIN_ID }}
+            SUPPORT_USERNAME=${{ secrets.SUPPORT_USERNAME }}
+            
+            # ЮKassa платежи
+            YOOKASSA_SHOP_ID=${{ secrets.YOOKASSA_SHOP_ID }}
+            YOOKASSA_SECRET_KEY=${{ secrets.YOOKASSA_SECRET_KEY }}
+            
+            # Банковская карта для ручных переводов (парные подписки)
+            BANK_CARD=${{ secrets.BANK_CARD }}
+            ENVFILE
+
+            # Проверяем наличие необходимых файлов
+            echo "📁 Проверка структуры файлов..."
+            # Создаем необходимые JSON файлы если их нет
+            touch users_data.json tasks_data.json payments_data.json invite_codes.json
+            
+            # Устанавливаем правильные права
+            chmod 644 *.json
 
             # Перезапускаем systemd-сервис
             sudo systemctl restart telegram-bot
             echo "[✅] Bot deployed and restarted at $(date)"
+          EOF
+
+      - name: 📝 Проверка деплоя
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no \
+            ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} << 'EOF'
+            cd ~/telegram-bot
+            echo "=== Проверка деплоя ==="
+            echo "1. Проверяем наличие .env файла:"
+            if [ -f .env ]; then
+              echo "✅ .env существует"
+              # Показываем только имена переменных (без значений)
+              echo "   Переменные:"
+              cat .env | grep -E '^[A-Z_]' | cut -d= -f1 | sed 's/^/   - /'
+            else
+              echo "❌ .env не найден"
+            fi
+            
+            echo "2. Проверяем запуск бота:"
+            if systemctl is-active --quiet telegram-bot; then
+              echo "✅ Бот запущен"
+              echo "   Статус:"
+              systemctl status telegram-bot --no-pager | head -10
+            else
+              echo "❌ Бот не запущен"
+            fi
+            
+            echo "3. Проверяем логи (последние 5 строк):"
+            journalctl -u telegram-bot -n 5 --no-pager
+            
+            echo "=== Проверка завершена ==="
           EOF
