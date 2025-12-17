@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 TIMEZONE = "Europe/Moscow"
-BOT_TOKEN = os.getenv('BOT_TOKEN')
+BOT_TOKEN = os.getenv('TELEGRAM_TOKEN')
 ADMIN_ID = int(os.getenv('ADMIN_ID', '1296962464'))
 BANK_CARD = os.getenv('BANK_CARD', '2200 1234 5678 9010')
 SUPPORT_USERNAME = os.getenv('SUPPORT_USERNAME', '@admin')
