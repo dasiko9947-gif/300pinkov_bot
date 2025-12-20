@@ -217,11 +217,15 @@ async def send_daily_tasks():
     finally:
         is_sending_tasks = False
 
-# УПРОСТИТЬ логику проверки:
 async def send_task_to_user(user_id: int, user_data: dict):
     """Отправляет задание конкретному пользователю"""
     try:
         logger.info(f"🔍 send_task_to_user: проверяю пользователя {user_id}")
+        
+        # Проверяем, что user_data не None
+        if not user_data:
+            logger.error(f"❌ user_data is None для пользователя {user_id}")
+            return False
         
         # Проверяем доступ к заданиям
         has_subscription = await utils.is_subscription_active(user_data)
@@ -246,9 +250,10 @@ async def send_task_to_user(user_id: int, user_data: dict):
         
         if not can_receive:
             logger.info(f"⏸️ Пользователь {user_id} не может получить задание сейчас")
-            return False 
+            return False
+        
         todays_tasks = await utils.get_todays_tasks(user_data)
-        logger.info(f"📋 Заданий для пользователя {user_id}: {len(todays_tasks)}")
+        logger.info(f"📋 Заданий для пользователя {user_id}: {len(todays_tasks) if todays_tasks else 0}")
         
         if not todays_tasks:
             logger.warning(f"⚠️ Нет заданий для пользователя {user_id}")
@@ -275,7 +280,6 @@ async def send_task_to_user(user_id: int, user_data: dict):
         )
         
         # Обновляем данные пользователя
-        from datetime import datetime
         user_data['last_task_sent'] = datetime.now().isoformat()
         user_data['task_completed_today'] = False
         await utils.save_user(user_id, user_data)
@@ -286,6 +290,7 @@ async def send_task_to_user(user_id: int, user_data: dict):
     except Exception as e:
         logger.error(f"❌ Ошибка отправки пользователю {user_id}: {e}", exc_info=True)
         return False
+
 async def process_batch(tasks: list, current: int, total: int):
     """Обрабатывает батч задач и логирует прогресс"""
     try:
@@ -395,6 +400,10 @@ async def send_reminders():
     logger.info("🕡 Начинаем рассылку напоминаний...")
     
     users = await utils.get_users_without_response()
+    if not users:  # Проверяем что users не None
+        logger.info("👥 Нет пользователей для напоминаний")
+        return
+    
     sent_count = 0
     error_count = 0
     
@@ -978,6 +987,7 @@ class BotReplies:
         ]
         return random.choice(replies)
 # ОБНОВЛЯЕМ обработчик для нового текста кнопки
+
 @dp.message(F.text.contains("Задание на сегодня"))
 async def show_todays_task(message: Message):
     """Улучшенный обработчик кнопки задания"""
@@ -997,7 +1007,7 @@ async def show_todays_task(message: Message):
     # Обычные задания
     todays_tasks = await utils.get_todays_tasks(user_data)
     
-    if not todays_tasks:
+    if not todays_tasks or len(todays_tasks) == 0:  # Двойная проверка
         await message.answer(
             "🎉 <b>На сегодня заданий нет!</b>\n\n"
             "Возможно:\n"
@@ -1009,21 +1019,43 @@ async def show_todays_task(message: Message):
         )
         return
     
-    # Отправляем основное задание
-    for task in todays_tasks:
-        task_message = await format_task_message(
-            task['data'], 
-            task['day'], 
-            task['type']
-        )
+    # Отправляем основное задание - БЕЗОПАСНАЯ ИТЕРАЦИЯ
+    try:
+        # Проверяем, что todays_tasks действительно список
+        if not isinstance(todays_tasks, list):
+            logger.error(f"❌ todays_tasks не является списком: {type(todays_tasks)}")
+            await message.answer("❌ Ошибка: данные заданий повреждены")
+            return
+            
+        for task in todays_tasks:
+            # Проверяем, что task - словарь
+            if not isinstance(task, dict):
+                logger.error(f"❌ task не является словарем: {type(task)}")
+                continue
+                
+            # Проверяем наличие необходимых ключей
+            if 'data' not in task or 'day' not in task or 'type' not in task:
+                logger.error(f"❌ В задании отсутствуют необходимые ключи: {task.keys()}")
+                continue
+                
+            task_message = await format_task_message(
+                task['data'], 
+                task['day'], 
+                task['type']
+            )
+            await message.answer(
+                task_message, 
+                reply_markup=keyboards.task_keyboard,
+                disable_web_page_preview=True
+            )
+    except Exception as e:
+        logger.error(f"❌ Ошибка при отправке задания: {e}")
         await message.answer(
-            task_message, 
-            reply_markup=keyboards.task_keyboard,
-            disable_web_page_preview=True
+            "❌ Произошла ошибка при загрузке задания. Попробуйте позже.",
+            reply_markup=keyboards.get_main_menu(user_id)
         )
     
     await utils.update_user_activity(user_id)
-
 async def format_task_message(task_data, day, task_type):
     """Форматирует сообщение с заданием"""
     return (
@@ -1259,10 +1291,10 @@ async def show_subscription(message: Message):
         
         message_text = "<b>ПОДПИСКА 💎</b>\n\n"
         
-        # Проверяем пробный период
+        # Проверяем БЕСПЛАТНЫЙ пробный период
         created_at = datetime.fromisoformat(user_data.get('created_at', datetime.now().isoformat()))
         days_passed = (datetime.now() - created_at).days
-        is_trial = days_passed < 3
+        is_trial = days_passed < 3  # БЕСПЛАТНЫЕ 3 дня!
         
         if await is_subscription_active(user_data):
             try:
@@ -1272,21 +1304,24 @@ async def show_subscription(message: Message):
             except:
                 message_text += "✅ <b>Статус:</b> Активна\n"
         elif is_trial:
-            message_text += "✅ <b>Статус:</b> Активна\n"
-            message_text += "Ты получаешь ежедневные задания!\n\n"
+            message_text += "🎁 <b>Статус:</b> БЕСПЛАТНЫЙ пробный период\n"
+            message_text += f"Осталось бесплатных дней: {3 - days_passed}\n\n"
         else:
             message_text += "❌ <b>Статус:</b> Не активна\n"
             message_text += "Активируй подписку чтобы продолжить получать задания!\n\n"
         
         message_text += "<b>Доступные тарифы:</b>\n"
         
+        # ПОКАЗЫВАЕМ ТОЛЬКО ПЛАТНЫЕ ТАРИФЫ (без trial_ruble)
         for tariff_id, tariff in config.TARIFFS.items():
-            if tariff_id in ['month', 'year', 'pair_year']:
+            if tariff_id in ['month', 'year', 'pair_year']:  # ТОЛЬКО платные тарифы
                 message_text += f"• {tariff['name']} - {tariff['price']} руб.\n"
         
         await message.answer(message_text, reply_markup=keyboards.get_payment_keyboard())
         
     except Exception as e:
+        logger.error(f"❌ Ошибка в show_subscription: {e}")
+        await message.answer("❌ Произошла ошибка при загрузке информации о подписке")
         logger.error(f"❌ Ошибка в show_subscription: {e}")
         await message.answer("❌ Произошла ошибка при загрузке информации о подписке")
 @dp.message(F.text == "⏭️ ПРОПУСТИТЬ")
@@ -1856,12 +1891,51 @@ async def activate_subscription_after_payment(payment_data, callback):
         await callback.answer("❌ Ошибка: пользователь не найден")
         return
     
-    # Обновляем статус платежа
+    # ОБНОВЛЯЕМ статус платежа
     await payments.update_payment_status(payment_data['payment_id'], 'succeeded')
     
     if tariff_id == "pair_year":
         await activate_pair_subscription(user_data, user_id, tariff, callback)
     else:
+        # ДОБАВЛЯЕМ ДНИ ПОДПИСКИ (важно: добавляем к текущей дате)
+        updated_user_data = await utils.add_subscription_days(user_data, tariff['days'])
+        
+        # ЛОГИРУЕМ для отладки
+        logger.info(f"💰 Активация подписки для пользователя {user_id}")
+        logger.info(f"📅 Тариф: {tariff['name']}, дней: {tariff['days']}")
+        logger.info(f"📊 Старая дата окончания: {user_data.get('subscription_end', 'нет')}")
+        logger.info(f"📊 Новая дата окончания: {updated_user_data.get('subscription_end', 'нет')}")
+        
+        await utils.save_user(user_id, updated_user_data)
+        
+        success_message = (
+            f"✅ <b>Подписка активирована!</b>\n\n"
+            f"💎 Тариф: {tariff['name']}\n"
+            f"⏰ Срок: {tariff['days']} дней\n"
+            f"🎯 Теперь у вас есть доступ ко всем заданиям!\n\n"
+            f"Задания будут приходить ежедневно в 9:00 🕘"
+        )
+        
+        success = await safe_edit_message(callback, success_message)
+        if not success:
+            await safe_send_message(callback, success_message)
+        
+        # УВЕДОМЛЯЕМ админа об успешной активации
+        try:
+            user = callback.from_user
+            if user:
+                admin_message = (
+                    f"🎉 <b>Новая подписка активирована!</b>\n\n"
+                    f"👤 Пользователь: {user.first_name} (@{user.username or 'нет'})\n"
+                    f"🆔 ID: {user_id}\n"
+                    f"💎 Тариф: {tariff['name']}\n"
+                    f"💰 Сумма: {tariff['price']} руб.\n"
+                    f"📅 Дней: {tariff['days']}\n"
+                    f"⏰ Дата окончания: {updated_user_data.get('subscription_end', 'неизвестно')}"
+                )
+                await bot.send_message(config.ADMIN_ID, admin_message)
+        except Exception as e:
+            logger.error(f"Ошибка уведомления админа: {e}")
         updated_user_data = await utils.add_subscription_days(user_data, tariff['days'])
         await utils.save_user(user_id, updated_user_data)
         
@@ -3625,6 +3699,84 @@ async def show_subscription_from_progress(callback: CallbackQuery):
     
     await callback.answer()
 
+@dp.message(Command("check_subscription"))
+async def check_subscription_command(message: Message):
+    """Проверка статуса подписки пользователя"""
+    user = message.from_user
+    if not user:
+        return
+        
+    user_id = user.id
+    user_data = await utils.get_user(user_id)
+    
+    if not user_data:
+        await message.answer("❌ Пользователь не найден")
+        return
+    
+    # Проверяем статус подписки
+    has_subscription = await utils.is_subscription_active(user_data)
+    in_trial = await utils.is_in_trial_period(user_data)
+    trial_tasks = user_data.get('completed_tasks_in_trial', 0)
+    
+    message_text = f"🔍 <b>СТАТУС ПОДПИСКИ</b>\n\n"
+    message_text += f"👤 Пользователь: {user.first_name}\n"
+    message_text += f"🆔 ID: {user_id}\n\n"
+    
+    if has_subscription:
+        message_text += "✅ <b>Статус: ПОДПИСКА АКТИВНА</b>\n"
+        try:
+            from datetime import datetime, timezone
+            import pytz
+            
+            subscription_end_str = user_data.get('subscription_end')
+            if subscription_end_str:
+                # Парсим дату
+                date_str = subscription_end_str.split('+')[0].split('.')[0]
+                try:
+                    sub_end = datetime.strptime(date_str, '%Y-%m-%d %H:%M:%S')
+                except ValueError:
+                    sub_end = datetime.strptime(date_str, '%Y-%m-%d')
+                
+                # Добавляем часовой пояс
+                moscow_tz = pytz.timezone('Europe/Moscow')
+                if sub_end.tzinfo is None:
+                    sub_end = moscow_tz.localize(sub_end)
+                
+                now = datetime.now(pytz.UTC)
+                sub_end_utc = sub_end.astimezone(pytz.UTC)
+                days_left = (sub_end_utc - now).days
+                
+                message_text += f"📅 Дата окончания: {sub_end.strftime('%d.%m.%Y %H:%M')}\n"
+                message_text += f"⏰ Осталось дней: {days_left}\n"
+        except Exception as e:
+            logger.error(f"❌ Ошибка обработки даты: {e}")
+            message_text += f"📅 Дата окончания: {user_data.get('subscription_end', 'неизвестно')}\n"
+    elif in_trial:
+        message_text += "🎁 <b>Статус: ПРОБНЫЙ ПЕРИОД</b>\n"
+        message_text += f"📊 Выполнено заданий: {trial_tasks}/3\n"
+        days_left = await utils.get_trial_days_left(user_data)
+        message_text += f"⏰ Осталось дней: {days_left}\n"
+    else:
+        message_text += "❌ <b>Статус: ПОДПИСКА НЕ АКТИВНА</b>\n"
+    
+    # Показываем историю платежей
+    payments_data = await utils.read_json(config.PAYMENTS_FILE)
+    user_payments = []
+    
+    if payments_data:
+        for payment_id, payment in payments_data.items():
+            if payment.get('user_id') == user_id:
+                user_payments.append(payment)
+    
+    if user_payments:
+        message_text += f"\n📋 <b>История платежей:</b>\n"
+        for payment in user_payments[:3]:  # Показываем последние 3
+            date = payment.get('created_at', 'неизвестно')
+            amount = payment.get('amount', 0)
+            status = payment.get('status', 'неизвестно')
+            message_text += f"• {date[:10]}: {amount} руб. ({status})\n"
+    
+    await message.answer(message_text)
 
 # ========== ПАРНЫХ ТАРИФОВ И ИНВАЙТА ==========
 @dp.callback_query(F.data == "activate_invite_from_subscription")
@@ -3667,8 +3819,14 @@ async def activate_subscription_after_trial(callback: CallbackQuery):
     try:
         await callback.message.edit_text(
             "<b>ПОДПИСКА 💎</b>\n\n"
-            "Выбери подходящий тариф чтобы продолжить получать задания:",
-            reply_markup=keyboards.get_payment_keyboard()  # УБИРАЕМ user.id
+            "🎁 <b>Твой пробный период завершен!</b>\n\n"
+            "Выбери подходящий тариф, чтобы продолжить получать ежедневные задания "
+            "и двигаться к своей сильной версии:\n\n"
+            "💪 <b>Что ты получаешь с подпиской:</b>\n"
+            "• Ежедневные задания для развития силы воли\n"
+            "• Эксклюзивные бонусы в зависимости от ранга\n"
+            "• Пожизненный доступ в платную группу после завершения челленджа",
+            reply_markup=keyboards.get_payment_keyboard()
         )
     except Exception as e:
         logger.error(f"Ошибка при редактировании сообщения: {e}")
@@ -4295,6 +4453,12 @@ async def check_me_command(message: Message):
     
     if not user_data:
         # Создаем временного пользователя для теста
+        from datetime import datetime
+        import pytz
+        
+        moscow_tz = pytz.timezone('Europe/Moscow')
+        now = datetime.now(moscow_tz)
+        
         user_data = {
             "user_id": user_id,
             "username": user.username or "",
@@ -4305,13 +4469,13 @@ async def check_me_command(message: Message):
             "current_day": 0,
             "completed_tasks": 0,
             "rank": "putnik",
-            "created_at": datetime.now().isoformat(),
+            "created_at": now.isoformat(),
             "referrals": [],
             "referral_earnings": 0,
             "last_task_sent": None,
             "task_completed_today": False,
             "debts": [],
-            "last_activity": datetime.now().isoformat()
+            "last_activity": now.isoformat()
         }
         await utils.save_user(user_id, user_data)
         await message.answer("⚠️ Создал временную запись пользователя для теста")
@@ -4335,7 +4499,7 @@ async def check_me_command(message: Message):
         f"🆓 Пробный период: {in_trial}\n"
         f"📅 Последнее задание: {user_data.get('last_task_sent', 'никогда')}\n"
         f"✅ Задание выполнено сегодня: {user_data.get('task_completed_today', False)}\n"
-        f"📋 Сегодняшних заданий: {len(todays_tasks)}\n"
+        f"📋 Сегодняшних заданий: {len(todays_tasks) if todays_tasks else 0}\n"
     )
     
     # Проверяем функции доступа

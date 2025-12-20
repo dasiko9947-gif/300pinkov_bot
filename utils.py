@@ -74,7 +74,7 @@ async def get_task_by_day(day_number, archetype="spartan"):
     
     if not tasks:
         logger.error("❌ Файл задач пуст или не существует")
-        return None, None
+        return None, None  # Возвращаем None для обоих значений
     
     # ФОРМАТ: "task_1_spartan"
     task_key = f"task_{day_number}_{archetype}"
@@ -88,58 +88,72 @@ async def get_task_by_day(day_number, archetype="spartan"):
     logger.warning(f"⚠️ Задание дня {day_number} для архетипа {archetype} не найдено")
     
     # Для отладки показываем первые 5 ключей
-    available_keys = list(tasks.keys())[:5]
-    logger.info(f"📋 Первые 5 ключей в файле: {available_keys}")
+    if tasks:
+        available_keys = list(tasks.keys())[:5]
+        logger.info(f"📋 Первые 5 ключей в файле: {available_keys}")
     
-    return None, None
-
+    return None, None  # ВСЕГДА возвращаем кортеж, даже если None
 async def get_todays_tasks(user_data):
-    """Возвращает задание на сегодня"""
+    """Возвращает задание на сегодня - ВСЕГДА возвращает список"""
+    if not user_data:
+        logger.info("❌ user_data is None в get_todays_tasks")
+        return []  # ВСЕГДА возвращаем список, даже пустой
+    
     logger.info(f"🔍 get_todays_tasks: проверяю пользователя")
     logger.info(f"   Текущий день: {user_data.get('current_day', 0)}")
     logger.info(f"   Архетип: {user_data.get('archetype')}")
     
-    tasks = []
+    tasks = []  # Начинаем с пустого списка
     
     # Проверяем, может ли пользователь получать задания
-    has_access = (
-        await is_subscription_active(user_data) or 
-        await is_in_trial_period(user_data)
-    )
-    
-    if not has_access:
-        logger.info(f"   ❌ Нет доступа к заданиям")
-        return tasks
+    try:
+        has_access = (
+            await is_subscription_active(user_data) or 
+            await is_in_trial_period(user_data)
+        )
+        
+        if not has_access:
+            logger.info(f"   ❌ Нет доступа к заданиям")
+            return tasks  # Возвращаем пустой список
+    except Exception as e:
+        logger.error(f"❌ Ошибка проверки доступа: {e}")
+        return tasks  # Возвращаем пустой список при ошибке
     
     # Проверяем, выполнено ли уже сегодняшнее задание
     if user_data.get('task_completed_today'):
         logger.info(f"   ⏸️ Задание уже выполнено сегодня")
-        return tasks
+        return tasks  # Возвращаем пустой список
     
     # Основное задание
-    current_day = user_data.get('current_day', 0)
-    next_day = current_day + 1
-    
-    logger.info(f"   📅 Следующий день: {next_day}")
-    
-    task_id, task = await get_task_by_day(next_day, user_data.get('archetype', 'spartan'))
-    
-    if task:
-        task_data = {
-            'type': 'main',
-            'day': next_day,
-            'task_id': task_id,
-            'text': task.get('text', 'Текст задания не найден'),
-            'data': task
-        }
-        tasks.append(task_data)
-        logger.info(f"   ✅ Найдено задание дня {next_day}")
-    else:
-        logger.warning(f"   ❌ Задание дня {next_day} не найдено")
+    try:
+        current_day = user_data.get('current_day', 0)
+        next_day = current_day + 1
+        
+        logger.info(f"   📅 Следующий день: {next_day}")
+        
+        task_id, task = await get_task_by_day(next_day, user_data.get('archetype', 'spartan'))
+        
+        if task:
+            if not isinstance(task, dict):
+                logger.error(f"❌ Полученное задание не является словарем: {type(task)}")
+                return tasks
+                
+            task_data = {
+                'type': 'main',
+                'day': next_day,
+                'task_id': task_id,
+                'text': task.get('text', 'Текст задания не найден'),
+                'data': task
+            }
+            tasks.append(task_data)
+            logger.info(f"   ✅ Найдено задание дня {next_day}")
+        else:
+            logger.warning(f"   ❌ Задание дня {next_day} не найдено")
+    except Exception as e:
+        logger.error(f"❌ Ошибка получения задания: {e}")
     
     logger.info(f"   📊 Всего заданий: {len(tasks)}")
-    return tasks
-
+    return tasks  # ВСЕГДА возвращаем список (даже пустой)
 async def can_receive_new_task(user_data):
     """Проверяет, может ли пользователь получить новое задание"""
     logger.info(f"🔍 can_receive_new_task: проверяю пользователя")
@@ -149,7 +163,7 @@ async def can_receive_new_task(user_data):
         logger.info(f"   ✅ В спринте - может получить задание")
         return True
     
-    # ПРОВЕРЯЕМ ПРОБНЫЙ ПЕРИОД (первые 3 дня)
+    # ПРОВЕРЯЕМ БЕСПЛАТНЫЙ ПРОБНЫЙ ПЕРИОД (первые 3 дня)
     if await is_in_trial_period(user_data):
         created_at_str = user_data.get('created_at')
         if created_at_str:
@@ -157,18 +171,11 @@ async def can_receive_new_task(user_data):
                 created_at = datetime.fromisoformat(created_at_str)
                 days_passed = (datetime.now() - created_at).days
                 
-                # Проверяем, не выполнил ли уже 3 задания в пробном периоде
-                completed_in_trial = user_data.get('completed_tasks_in_trial', 0)
-                
-                if days_passed < 3 and completed_in_trial < 3:
-                    logger.info(f"✅ В пробном периоде, заданий выполнено: {completed_in_trial}/3")
+                # В БЕСПЛАТНОМ пробном периоде (первые 3 дня) можно получить 3 задания
+                # НЕ проверяем completed_tasks_in_trial - просто даем доступ на 3 дня
+                if days_passed < 3:
+                    logger.info(f"✅ В БЕСПЛАТНОМ пробном периоде, день {days_passed + 1}")
                     return True
-                elif days_passed >= 3:
-                    logger.info(f"⏸️ Пробный период закончился по времени")
-                    return False
-                elif completed_in_trial >= 3:
-                    logger.info(f"⏸️ Выполнено все 3 пробных задания")
-                    return False
                     
             except Exception as e:
                 logger.error(f"❌ Ошибка проверки пробного периода: {e}")
@@ -177,17 +184,14 @@ async def can_receive_new_task(user_data):
     if user_data.get('task_completed_today', False):
         last_task_sent = user_data.get('last_task_sent')
         
-        # ЕСЛИ last_task_sent НЕТ - это ошибка данных
         if not last_task_sent:
             logger.warning(f"⚠️ Противоречие: task_completed_today=True, но last_task_sent=None")
-            return True  # Разрешаем чтобы исправить ситуацию
+            return True
         
         try:
-            # Проверяем, когда было последнее задание
             last_date = datetime.fromisoformat(last_task_sent).date()
             today = datetime.now().date()
             
-            # Если задание было вчера или раньше - можем получить новое
             if last_date < today:
                 logger.info(f"✅ Задание выполнено вчера, можно получить новое")
                 return True
@@ -199,13 +203,13 @@ async def can_receive_new_task(user_data):
             logger.error(f"❌ Ошибка проверки даты: {e}")
             return True
     
-    # Проверяем подписку
+    # Проверяем платную подписку
     has_subscription = await is_subscription_active(user_data)
     
-    logger.info(f"   Подписка: {has_subscription}")
+    logger.info(f"   Подписка активна: {has_subscription}")
     
     if not has_subscription:
-        # Если нет подписки и не в пробном периоде
+        # Если нет подписки и не в БЕСПЛАТНОМ пробном периоде
         logger.info(f"❌ Нет доступа к заданиям (нет подписки и пробный период закончился)")
         return False
     
@@ -225,41 +229,135 @@ async def can_receive_new_task(user_data):
     
     logger.info(f"✅ Может получить задание")
     return True
-
 # ========== ФУНКЦИИ ПОДПИСКИ ==========
 
 async def is_subscription_active(user_data):
-    """Проверяет активна ли подписка"""
-    if not user_data or not user_data.get('subscription_end'):
+    """Проверяет активна ли подписка (исправленная версия)"""
+    if not user_data:
+        logger.debug(f"❌ Нет данных пользователя")
         return False
+    
+    subscription_end = user_data.get('subscription_end')
+    if not subscription_end:
+        logger.debug(f"❌ Нет даты окончания подписки")
+        return False
+    
     try:
-        sub_end = datetime.fromisoformat(user_data['subscription_end'])
-        return datetime.now() < sub_end
-    except:
+        from datetime import datetime
+        import pytz
+        
+        # Пробуем ISO формат
+        try:
+            sub_end = datetime.fromisoformat(subscription_end)
+        except ValueError:
+            # Если не ISO формат, используем простой парсинг
+            # Убираем временную зону если есть
+            date_str = subscription_end.split('+')[0].split('.')[0]  # Убираем временную зону и микросекунды
+            sub_end = datetime.strptime(date_str, '%Y-%m-%d %H:%M:%S')
+        
+        # Убеждаемся, что у даты есть часовой пояс
+        if sub_end.tzinfo is None:
+            moscow_tz = pytz.timezone('Europe/Moscow')
+            sub_end = moscow_tz.localize(sub_end)
+        
+        now = datetime.now(pytz.UTC)
+        # Конвертируем sub_end в UTC для сравнения
+        sub_end_utc = sub_end.astimezone(pytz.UTC)
+        
+        is_active = now < sub_end_utc
+        
+        # ЛОГИРУЕМ для отладки
+        logger.info(f"🔍 Проверка подписки:")
+        logger.info(f"   📅 Дата окончания: {subscription_end}")
+        logger.info(f"   📅 Parsed date: {sub_end}")
+        logger.info(f"   📅 UTC date: {sub_end_utc}")
+        logger.info(f"   ⏰ Текущее время (UTC): {now.isoformat()}")
+        logger.info(f"   ✅ Активна: {is_active}")
+        
+        if is_active:
+            days_left = (sub_end_utc - now).days
+            logger.info(f"   ⏰ Осталось дней: {days_left}")
+        
+        return is_active
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка проверки подписки: {e}")
+        logger.error(f"📅 Проблемная дата: {subscription_end}")
+        logger.error(f"📊 Все данные пользователя: {user_data}")
         return False
 
 async def add_subscription_days(user_data, days):
-    """Добавляет дни подписки"""
-    if not user_data:
+    """Добавляет дни подписки (исправленная версия)"""
+    if not isinstance(user_data, dict):
+        logger.error(f"❌ Ошибка: user_data не является словарем")
         user_data = {}
-        
+    
+    from datetime import datetime, timedelta
+    import pytz
+    
+    # Устанавливаем часовой пояс Москвы
+    moscow_tz = pytz.timezone('Europe/Moscow')
+    now = datetime.now(moscow_tz)
+    
+    # Если уже есть дата окончания подписки
     if user_data.get('subscription_end'):
         try:
-            current_end = datetime.fromisoformat(user_data['subscription_end'])
-            if current_end > datetime.now():
-                new_end = current_end + timedelta(days=days)
+            current_end_str = user_data['subscription_end']
+            
+            # Пробуем ISO формат
+            try:
+                current_end = datetime.fromisoformat(current_end_str)
+            except ValueError:
+                # Если не ISO формат, используем простой парсинг
+                date_str = current_end_str.split('+')[0].split('.')[0]
+                current_end = datetime.strptime(date_str, '%Y-%m-%d %H:%M:%S')
+            
+            # Если дата без часового пояса, добавляем московский
+            if current_end.tzinfo is None:
+                current_end = moscow_tz.localize(current_end)
+            
+            # Конвертируем в московское время для сравнения
+            current_end_moscow = current_end.astimezone(moscow_tz)
+            
+            if current_end_moscow > now:
+                # Добавляем дни к текущей дате окончания
+                new_end = current_end_moscow + timedelta(days=days)
             else:
-                new_end = datetime.now() + timedelta(days=days)
-        except:
-            new_end = datetime.now() + timedelta(days=days)
+                # Подписка истекла, начинаем с сегодня
+                new_end = now + timedelta(days=days)
+                
+        except Exception as e:
+            logger.error(f"❌ Ошибка обработки даты окончания подписки: {e}")
+            logger.error(f"📅 Проблемная дата: {user_data.get('subscription_end')}")
+            # В случае ошибки начинаем с сегодня
+            new_end = now + timedelta(days=days)
     else:
-        new_end = datetime.now() + timedelta(days=days)
+        # Первая подписка
+        new_end = now + timedelta(days=days)
     
+    # Сохраняем в ISO формате
     user_data['subscription_end'] = new_end.isoformat()
+    
+    # ЛОГИРУЕМ для отладки
+    logger.info(f"📅 Добавление подписки: {days} дней")
+    logger.info(f"📅 Текущее время (Москва): {now.isoformat()}")
+    logger.info(f"📅 Новая дата окончания: {new_end.isoformat()}")
+    
     return user_data
-
 async def is_in_trial_period(user_data):
-    """Проверяет, находится ли пользователь в пробном периоде (3 дня)"""
+    """Проверяет, находится ли пользователь в БЕСПЛАТНОМ пробном периоде (3 дня)"""
+    if not user_data:
+        return False
+    
+    # Если у пользователя уже есть платная подписка - не в пробном
+    if user_data.get('subscription_end'):
+        try:
+            sub_end = datetime.fromisoformat(user_data['subscription_end'])
+            if datetime.now() < sub_end:
+                return False  # Уже есть активная платная подписка
+        except:
+            pass
+    
     created_at_str = user_data.get('created_at')
     if not created_at_str:
         return False
@@ -267,10 +365,12 @@ async def is_in_trial_period(user_data):
     try:
         created_at = datetime.fromisoformat(created_at_str)
         days_passed = (datetime.now() - created_at).days
+        
+        # БЕСПЛАТНЫЙ пробный период - 3 дня после регистрации
+        # НЕ требуется оплата 1 рубля!
         return days_passed < 3
     except Exception:
         return False
-
 async def get_trial_days_left(user_data):
     """Возвращает количество оставшихся дней пробного периода"""
     if not user_data or not user_data.get('created_at'):
@@ -594,31 +694,51 @@ async def format_gender_text(text, user_data):
 async def get_users_for_task_sending():
     """Возвращает пользователей для отправки заданий"""
     users = await get_all_users()
+    if not users:  # Проверяем что users не None
+        return []
+    
     result = []
     
-    for user_id, user_data in users.items():
-        # Если пользователь в спринте - отправляем задания
-        if user_data.get('sprint_type') and not user_data.get('sprint_completed'):
-            if await can_receive_new_task(user_data):
-                result.append((int(user_id), user_data))
-        # Логика для подписок
-        elif await is_subscription_active(user_data) or await is_in_trial_period(user_data):
-            if await can_receive_new_task(user_data):
-                result.append((int(user_id), user_data))
+    for user_id_str, user_data in users.items():
+        try:
+            user_id = int(user_id_str)
+            if not user_data:  # Проверяем что user_data не None
+                continue
+                
+            # Если пользователь в спринте - отправляем задания
+            if user_data.get('sprint_type') and not user_data.get('sprint_completed'):
+                if await can_receive_new_task(user_data):
+                    result.append((user_id, user_data))
+            # Логика для подписок
+            elif await is_subscription_active(user_data) or await is_in_trial_period(user_data):
+                if await can_receive_new_task(user_data):
+                    result.append((user_id, user_data))
+        except Exception as e:
+            logger.error(f"❌ Ошибка обработки пользователя {user_id_str}: {e}")
     
     return result
 
 async def get_users_without_response():
     """Возвращает пользователей, которые не ответили на сегодняшнее задание"""
     users = await get_all_users()
+    if not users:  # Проверяем что users не None
+        return []
+    
     result = []
     
-    for user_id, user_data in users.items():
-        if (await is_subscription_active(user_data) or await is_in_trial_period(user_data)):
-            # Пользователь получил задание, но не ответил
-            if (user_data.get('last_task_sent') and 
-                not user_data.get('task_completed_today')):
-                result.append((int(user_id), user_data))
+    for user_id_str, user_data in users.items():
+        try:
+            user_id = int(user_id_str)
+            if not user_data:  # Проверяем что user_data не None
+                continue
+                
+            if (await is_subscription_active(user_data) or await is_in_trial_period(user_data)):
+                # Пользователь получил задание, но не ответил
+                if (user_data.get('last_task_sent') and 
+                    not user_data.get('task_completed_today')):
+                    result.append((user_id, user_data))
+        except Exception as e:
+            logger.error(f"❌ Ошибка обработки пользователя {user_id_str}: {e}")
     
     return result
 
