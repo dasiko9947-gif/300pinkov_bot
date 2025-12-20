@@ -149,6 +149,30 @@ async def can_receive_new_task(user_data):
         logger.info(f"   ✅ В спринте - может получить задание")
         return True
     
+    # ПРОВЕРЯЕМ ПРОБНЫЙ ПЕРИОД (первые 3 дня)
+    if await is_in_trial_period(user_data):
+        created_at_str = user_data.get('created_at')
+        if created_at_str:
+            try:
+                created_at = datetime.fromisoformat(created_at_str)
+                days_passed = (datetime.now() - created_at).days
+                
+                # Проверяем, не выполнил ли уже 3 задания в пробном периоде
+                completed_in_trial = user_data.get('completed_tasks_in_trial', 0)
+                
+                if days_passed < 3 and completed_in_trial < 3:
+                    logger.info(f"✅ В пробном периоде, заданий выполнено: {completed_in_trial}/3")
+                    return True
+                elif days_passed >= 3:
+                    logger.info(f"⏸️ Пробный период закончился по времени")
+                    return False
+                elif completed_in_trial >= 3:
+                    logger.info(f"⏸️ Выполнено все 3 пробных задания")
+                    return False
+                    
+            except Exception as e:
+                logger.error(f"❌ Ошибка проверки пробного периода: {e}")
+    
     # Если задание уже выполнено сегодня - проверяем дату
     if user_data.get('task_completed_today', False):
         last_task_sent = user_data.get('last_task_sent')
@@ -175,14 +199,14 @@ async def can_receive_new_task(user_data):
             logger.error(f"❌ Ошибка проверки даты: {e}")
             return True
     
-    # Проверяем подписку и пробный период
+    # Проверяем подписку
     has_subscription = await is_subscription_active(user_data)
-    in_trial = await is_in_trial_period(user_data)
     
-    logger.info(f"   Подписка: {has_subscription}, Пробный: {in_trial}")
+    logger.info(f"   Подписка: {has_subscription}")
     
-    if not has_subscription and not in_trial:
-        logger.info(f"❌ Нет доступа к заданиям")
+    if not has_subscription:
+        # Если нет подписки и не в пробном периоде
+        logger.info(f"❌ Нет доступа к заданиям (нет подписки и пробный период закончился)")
         return False
     
     # Проверяем, не получал ли уже задание сегодня
@@ -518,6 +542,53 @@ async def get_all_invite_codes(include_hidden=False):
     
     return invite_codes
 
+# ========== ГЕНДЕРНЫЕ ОКОНЧАНИЯ ДЛЯ АРХЕТИПОВ ==========
+
+async def get_gender_ending(user_data):
+    """Возвращает правильные окончания в зависимости от архетипа"""
+    archetype = user_data.get('archetype', 'spartan')
+    
+    if archetype == 'amazon':
+        return {
+            'subject': 'ты',           # вместо "ты" (нейтрально, но можно заменить)
+            'verb_action': 'сделала',  # сделал/сделала
+            'verb_started': 'начала',  # начал/начала
+            'adjective': 'готова',     # готов/готова
+            'person': 'Амазонка',      # обращение
+            'pronoun': 'твоя',         # твой/твоя
+            'ending_a': 'а',           # окончание для женского рода
+            'ending_la': 'ла',         # прошедшее время жен.род
+        }
+    else:  # spartan по умолчанию
+        return {
+            'subject': 'ты',
+            'verb_action': 'сделал',
+            'verb_started': 'начал',
+            'adjective': 'готов',
+            'person': 'Спартанец',
+            'pronoun': 'твой',
+            'ending_a': '',
+            'ending_la': 'л',
+        }
+
+async def format_gender_text(text, user_data):
+    """Форматирует текст с учетом гендерных окончаний"""
+    endings = await get_gender_ending(user_data)
+    
+    # Заменяем плейсхолдеры
+    replacements = {
+        '{subject}': endings['subject'],
+        '{verb_action}': endings['verb_action'],
+        '{verb_started}': endings['verb_started'],
+        '{adjective}': endings['adjective'],
+        '{person}': endings['person'],
+        '{pronoun}': endings['pronoun'],
+    }
+    
+    for placeholder, value in replacements.items():
+        text = text.replace(placeholder, value)
+    
+    return text
 # ========== УТИЛИТЫ ДЛЯ РАССЫЛКИ ==========
 
 async def get_users_for_task_sending():

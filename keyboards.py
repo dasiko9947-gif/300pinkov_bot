@@ -25,7 +25,7 @@ archetype_keyboard = ReplyKeyboardMarkup(
 # Обновленная клавиатура для заданий
 task_keyboard = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="⚔️ ВЫПОЛНИЛ"), KeyboardButton(text="⏭️ ОТЛОЖИТЬ")],
+        [KeyboardButton(text="✅ ГОТОВО"), KeyboardButton(text="⏭️ ПРОПУСТИТЬ")],
         [KeyboardButton(text="📤 Пинок другу"), KeyboardButton(text="🔙 Назад")]
     ],
     resize_keyboard=True
