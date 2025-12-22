@@ -14,7 +14,44 @@ async def get_current_postponed_count(user_data):
     postponed_tasks = user_data.get('postponed_tasks', [])
     active_postponed = [task for task in postponed_tasks if not task.get('completed', False)]
     return len(active_postponed)
-
+# В начале файла utils.py после импортов ДОБАВЬТЕ:
+# В utils.py, после других функций работы с рефералами
+async def add_referral(referrer_id, referred_id):
+    """Добавляет реферала к рефереру (старая функция для совместимости)"""
+    try:
+        referrer_data = await get_user(referrer_id)
+        if referrer_data:
+            referrals = referrer_data.get('referrals', [])
+            if referred_id not in referrals:
+                referrals.append(referred_id)
+                referrer_data['referrals'] = referrals
+                await save_user(referrer_id, referrer_data)
+                return True
+        return False
+    except Exception as e:
+        logger.error(f"❌ Ошибка добавления реферала: {e}")
+        return False
+async def get_referral_level(ref_count):
+    """Определяет уровень реферальной системы"""
+    try:
+        # БЕЗОПАСНАЯ ПРОВЕРКА ref_count
+        if ref_count is None:
+            ref_count = 0
+        
+        # Сначала проверяем высшие уровни
+        levels = list(config.REFERRAL_LEVELS.items())
+        levels.sort(key=lambda x: x[1]['min_refs'], reverse=True)
+        
+        for level_id, level_info in levels:
+            if ref_count >= level_info['min_refs']:
+                return level_id, level_info
+        
+        # Если не нашли, возвращаем начальный уровень
+        return "legioner", config.REFERRAL_LEVELS["legioner"]
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка определения реферального уровня: {e}")
+        return "legioner", config.REFERRAL_LEVELS["legioner"]
 async def read_json(file_path):
     """Асинхронно читает JSON файл"""
     try:
@@ -511,30 +548,557 @@ async def get_rank_display_info(rank_id, user_data=None):
 
 # ========== РЕФЕРАЛЬНАЯ СИСТЕМА ==========
 
-async def get_referral_level(ref_count):
-    """Определяет уровень реферальной системы"""
-    # Сначала проверяем высшие уровни
-    levels = list(config.REFERRAL_LEVELS.items())
-    levels.sort(key=lambda x: x[1]['min_refs'], reverse=True)
+async def save_referral_relationship(referred_id, referrer_id):
+    """Сохраняет связь реферал-реферер"""
+    try:
+        # Получаем данные реферала
+        referred_data = await get_user(referred_id)
+        if not referred_data:
+            logger.error(f"❌ Реферал {referred_id} не найден")
+            return False
+        
+        # Сохраняем кто пригласил
+        referred_data['invited_by'] = referrer_id
+        await save_user(referred_id, referred_data)
+        
+        # Добавляем в список рефералов реферера
+        referrer_data = await get_user(referrer_id)
+        if referrer_data:
+            referrals = referrer_data.get('referrals', [])
+            if referred_id not in referrals:
+                referrals.append(referred_id)
+                referrer_data['referrals'] = referrals
+                await save_user(referrer_id, referrer_data)
+                
+                # Логируем действие
+                await log_transaction(
+                    user_id=referrer_id,
+                    transaction_type="referral_add",
+                    amount=0,
+                    description=f"Добавлен реферал {referred_id}"
+                )
+                
+                logger.info(f"✅ Реферал {referred_id} добавлен к {referrer_id}")
+                return True
+                
+    except Exception as e:
+        logger.error(f"❌ Ошибка сохранения реферальной связи: {e}")
     
-    for level_id, level_info in levels:
-        if ref_count >= level_info['min_refs']:
-            return level_id, level_info
-    
-    # Если не нашли, возвращаем начальный уровень (Легионер с 0 рефералов)
-    return "legioner", config.REFERRAL_LEVELS["legioner"]
-
-async def add_referral(referrer_id, referred_id):
-    """Добавляет реферала"""
-    referrer_data = await get_user(referrer_id)
-    if referrer_data:
-        referrals = referrer_data.get('referrals', [])
-        if referred_id not in referrals:
-            referrals.append(referred_id)
-            referrer_data['referrals'] = referrals
-            await save_user(referrer_id, referrer_data)
-            return True
     return False
+
+async def process_referral_payment(referred_id, amount, tariff_id):
+    """Обрабатывает реферальное начисление при оплате"""
+    try:
+        # Получаем данные реферала
+        referred_data = await get_user(referred_id)
+        if not referred_data:
+            logger.warning(f"ℹ️ Реферал {referred_id} не найден")
+            return False, None, 0, 0
+        
+        # Получаем ID реферера
+        referrer_id = referred_data.get('invited_by')
+        if not referrer_id:
+            logger.info(f"ℹ️ У пользователя {referred_id} нет реферера")
+            return False, None, 0, 0
+        
+        # Получаем данные реферера
+        referrer_data = await get_user(referrer_id)
+        if not referrer_data:
+            logger.warning(f"ℹ️ Реферер {referrer_id} не найден")
+            return False, None, 0, 0
+        
+        # Рассчитываем уровень и процент
+        referrals_count = len(referrer_data.get('referrals', []))
+        level_id, level = await get_referral_level(referrals_count)  # ИСПОЛЬЗУЕМ async
+        
+        if not level:
+            logger.error(f"❌ Не удалось определить реферальный уровень для {referrer_id}")
+            return False, None, 0, 0
+            
+        percent = level.get('percent', 0)
+        
+        # Рассчитываем бонус
+        bonus_amount = (amount * percent) / 100
+        
+        # Обновляем баланс реферера
+        current_balance = referrer_data.get('referral_earnings', 0)
+        referrer_data['referral_earnings'] = current_balance + bonus_amount
+        
+        # Сохраняем статистику
+        if 'referral_stats' not in referrer_data:
+            referrer_data['referral_stats'] = {}
+        
+        stats = referrer_data['referral_stats']
+        stats['total_earned'] = stats.get('total_earned', 0) + bonus_amount
+        stats['payments_count'] = stats.get('payments_count', 0) + 1
+        stats['last_payment'] = datetime.now().isoformat()
+        
+        await save_user(referrer_id, referrer_data)
+        
+        # Логируем транзакцию
+        await log_transaction(
+            user_id=referrer_id,
+            transaction_type="referral_bonus",
+            amount=bonus_amount,
+            description=f"Бонус за оплату {referred_id}. Тариф: {tariff_id}"
+        )
+        
+        # Сохраняем детали платежа реферала
+        await save_referral_payment_details(
+            referrer_id=referrer_id,
+            referred_id=referred_id,
+            amount=amount,
+            bonus=bonus_amount,
+            percent=percent,
+            tariff_id=tariff_id
+        )
+        
+        logger.info(f"💰 Начислен бонус {bonus_amount} руб. рефереру {referrer_id}")
+        return True, referrer_id, bonus_amount, percent
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка обработки реферального платежа: {e}")
+        return False, None, 0, 0
+
+async def save_referral_payment_details(referrer_id, referred_id, amount, bonus, percent, tariff_id):
+    """Сохраняет детали реферального платежа"""
+    try:
+        # Создаем запись о платеже
+        payment_id = f"ref_{datetime.now().strftime('%Y%m%d%H%M%S')}_{random.randint(1000, 9999)}"
+        
+        payment_data = {
+            'id': payment_id,
+            'referrer_id': referrer_id,
+            'referred_id': referred_id,
+            'amount': amount,
+            'bonus': bonus,
+            'percent': percent,
+            'tariff_id': tariff_id,
+            'date': datetime.now().isoformat(),
+            'status': 'completed'
+        }
+        
+        # Сохраняем в файл реферальных платежей
+        ref_payments = await read_json('referral_payments.json')
+        if not ref_payments:
+            ref_payments = {}
+        
+        ref_payments[payment_id] = payment_data
+        await write_json('referral_payments.json', ref_payments)
+        
+        # Также сохраняем в транзакции реферера
+        await log_transaction(
+            user_id=referrer_id,
+            transaction_type="referral_income",
+            amount=bonus,
+            description=f"Реферальный доход от {referred_id}"
+        )
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка сохранения деталей платежа: {e}")
+
+async def get_referral_statistics(user_id):
+    """Получает детальную статистику по рефералам"""
+    try:
+        user_data = await get_user(user_id)
+        if not user_data:
+            return None
+        
+        referrals = user_data.get('referrals', [])
+        total_earned = user_data.get('referral_earnings', 0)
+        stats = user_data.get('referral_stats', {})
+        
+        # Собираем детали по каждому рефералу
+        detailed_referrals = []
+        active_count = 0
+        total_payments = 0
+        
+        for ref_id in referrals:
+            ref_data = await get_user(ref_id)
+            if ref_data:
+                # Проверяем активность
+                is_active = await is_subscription_active(ref_data) or await is_in_trial_period(ref_data)
+                if is_active:
+                    active_count += 1
+                
+                # Считаем платежи этого реферала
+                ref_payments = await get_referral_payments_by_referred(ref_id)
+                ref_total = sum(p['amount'] for p in ref_payments)
+                total_payments += ref_total
+                
+                detailed_referrals.append({
+                    'id': ref_id,
+                    'name': ref_data.get('first_name', 'Пользователь'),
+                    'username': ref_data.get('username', ''),
+                    'is_active': is_active,
+                    'total_paid': ref_total,
+                    'joined_date': ref_data.get('created_at', ''),
+                    'payments_count': len(ref_payments)
+                })
+        
+        # Получаем уровень
+        level_id, level = await get_referral_level(len(referrals))
+        
+        return {
+            'total_referrals': len(referrals),
+            'active_referrals': active_count,
+            'total_earned': total_earned,
+            'level': level,
+            'detailed_referrals': detailed_referrals,
+            'stats': {
+                'total_payments_from_referrals': total_payments,
+                'conversion_rate': (active_count / len(referrals) * 100) if referrals else 0,
+                'avg_payment_per_referral': total_payments / len(referrals) if referrals else 0
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка получения статистики: {e}")
+        return None
+
+# ========== СИСТЕМА ВЫВОДА СРЕДСТВ ==========
+
+async def create_withdrawal_request(user_id, amount, method, details):
+    """Создает заявку на вывод средств БЕЗ КОМИССИИ"""
+    try:
+        # Проверяем баланс
+        user_data = await get_user(user_id)
+        if not user_data:
+            return False, "Пользователь не найден"
+        
+        balance = user_data.get('referral_earnings', 0)
+        
+        # Проверяем минимальную сумму (300 руб)
+        if amount < config.MIN_WITHDRAWAL:
+            return False, f"Минимальная сумма вывода: {config.MIN_WITHDRAWAL} руб."
+        
+        # Проверяем достаточно ли средств
+        if amount > balance:
+            return False, "Недостаточно средств на балансе"
+        
+        # Проверяем лимиты
+        limit_check = await check_withdrawal_limits(user_id, amount)
+        if not limit_check[0]:
+            return False, limit_check[1]
+        
+        # БЕЗ КОМИССИИ - вся сумма идет пользователю
+        amount_to_user = amount  # Полная сумма
+        
+        # Создаем ID заявки
+        withdrawal_id = f"WD{datetime.now().strftime('%Y%m%d%H%M%S')}{random.randint(1000, 9999)}"
+        
+        # Данные заявки БЕЗ КОМИССИИ
+        withdrawal_data = {
+            'id': withdrawal_id,
+            'user_id': user_id,
+            'user_name': user_data.get('first_name', ''),
+            'user_username': user_data.get('username', ''),
+            'amount': amount,
+            'amount_after_fee': amount_to_user,  # Та же сумма
+            'fee': 0,  # Комиссия 0
+            'fee_percent': 0,  # Процент 0
+            'method': method,
+            'details': details,
+            'status': 'pending',
+            'created_at': datetime.now().isoformat(),
+            'updated_at': datetime.now().isoformat()
+        }
+        
+        # Резервируем средства
+        user_data['referral_earnings'] = balance - amount
+        user_data['reserved_for_withdrawal'] = user_data.get('reserved_for_withdrawal', 0) + amount
+        await save_user(user_id, user_data)
+        
+        # Сохраняем заявку
+        withdrawals = await read_json(config.WITHDRAWALS_FILE)
+        if not withdrawals:
+            withdrawals = {}
+        
+        withdrawals[withdrawal_id] = withdrawal_data
+        await write_json(config.WITHDRAWALS_FILE, withdrawals)
+        
+        # Логируем транзакцию
+        await log_transaction(
+            user_id=user_id,
+            transaction_type="withdrawal_request",
+            amount=-amount,
+            description=f"Заявка на вывод #{withdrawal_id}"
+        )
+        
+        logger.info(f"✅ Создана заявка на вывод #{withdrawal_id}: {amount} руб. (без комиссии)")
+        return True, withdrawal_id
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка создания заявки: {e}")
+        return False, "Ошибка при создании заявки"
+async def check_withdrawal_limits(user_id, amount):
+    """Проверяет лимиты на вывод"""
+    try:
+        # Проверяем дневной лимит
+        today = datetime.now().strftime('%Y-%m-%d')
+        withdrawals = await read_json(config.WITHDRAWALS_FILE)
+        
+        if not withdrawals:
+            return True, ""
+        
+        # Считаем сегодняшние выводы
+        today_withdrawals = [
+            w for w in withdrawals.values() 
+            if w['user_id'] == user_id 
+            and w['created_at'].startswith(today)
+            and w['status'] in ['pending', 'processing', 'completed']
+        ]
+        
+        today_total = sum(w['amount'] for w in today_withdrawals)
+        
+        if today_total + amount > config.DAILY_WITHDRAWAL_LIMIT:
+            return False, f"Превышен дневной лимит. Осталось: {config.DAILY_WITHDRAWAL_LIMIT - today_total} руб."
+        
+        if len(today_withdrawals) >= config.MAX_WITHDRAWALS_PER_DAY:
+            return False, f"Превышено количество заявок в день"
+        
+        return True, ""
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка проверки лимитов: {e}")
+        return False, "Ошибка проверки лимитов"
+
+async def process_withdrawal(withdrawal_id, admin_id, action, comment=""):
+    """Обрабатывает заявку на вывод"""
+    try:
+        withdrawals = await read_json(config.WITHDRAWALS_FILE)
+        if withdrawal_id not in withdrawals:
+            return False, "Заявка не найдена"
+        
+        withdrawal = withdrawals[withdrawal_id]
+        user_id = withdrawal['user_id']
+        
+        if withdrawal['status'] != 'pending':
+            return False, "Заявка уже обработана"
+        
+        user_data = await get_user(user_id)
+        if not user_data:
+            return False, "Пользователь не найден"
+        
+        if action == 'approve':
+            # Вычитаем зарезервированные средства
+            reserved = user_data.get('reserved_for_withdrawal', 0)
+            user_data['reserved_for_withdrawal'] = max(0, reserved - withdrawal['amount'])
+            
+            withdrawal['status'] = 'processing'
+            withdrawal['processed_by'] = admin_id
+            withdrawal['processed_at'] = datetime.now().isoformat()
+            withdrawal['comment'] = comment
+            
+            # Логируем
+            await log_transaction(
+                user_id=user_id,
+                transaction_type="withdrawal_approved",
+                amount=0,
+                description=f"Вывод #{withdrawal_id} одобрен"
+            )
+            
+            message = "✅ Заявка одобрена"
+            
+        elif action == 'complete':
+            withdrawal['status'] = 'completed'
+            withdrawal['completed_at'] = datetime.now().isoformat()
+            
+            # Логируем завершение
+            await log_transaction(
+                user_id=user_id,
+                transaction_type="withdrawal_completed",
+                amount=-withdrawal['amount'],
+                description=f"Вывод #{withdrawal_id} завершен"
+            )
+            
+            message = "✅ Вывод завершен"
+            
+        elif action == 'reject':
+            # Возвращаем средства
+            user_data['referral_earnings'] = user_data.get('referral_earnings', 0) + withdrawal['amount']
+            reserved = user_data.get('reserved_for_withdrawal', 0)
+            user_data['reserved_for_withdrawal'] = max(0, reserved - withdrawal['amount'])
+            
+            withdrawal['status'] = 'rejected'
+            withdrawal['rejected_by'] = admin_id
+            withdrawal['rejected_at'] = datetime.now().isoformat()
+            withdrawal['reject_reason'] = comment
+            
+            # Логируем
+            await log_transaction(
+                user_id=user_id,
+                transaction_type="withdrawal_rejected",
+                amount=withdrawal['amount'],
+                description=f"Вывод #{withdrawal_id} отклонен: {comment}"
+            )
+            
+            message = "❌ Заявка отклонена"
+        
+        else:
+            return False, "Неизвестное действие"
+        
+        # Сохраняем изменения
+        await save_user(user_id, user_data)
+        withdrawals[withdrawal_id] = withdrawal
+        await write_json(config.WITHDRAWALS_FILE, withdrawals)
+        
+        logger.info(f"📋 Заявка #{withdrawal_id} обработана: {action}")
+        return True, message
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка обработки заявки: {e}")
+        return False, "Ошибка обработки"
+
+async def get_user_withdrawals(user_id, limit=10):
+    """Получает историю выводов пользователя"""
+    try:
+        withdrawals = await read_json(config.WITHDRAWALS_FILE)
+        if not withdrawals:
+            return []
+        
+        user_withdrawals = [
+            w for w in withdrawals.values() 
+            if w['user_id'] == user_id
+        ]
+        
+        # Сортируем по дате
+        user_withdrawals.sort(key=lambda x: x['created_at'], reverse=True)
+        
+        return user_withdrawals[:limit]
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка получения истории выводов: {e}")
+        return []
+
+async def get_pending_withdrawals():
+    """Получает все pending заявки"""
+    try:
+        withdrawals = await read_json(config.WITHDRAWALS_FILE)
+        if not withdrawals:
+            return []
+        
+        pending = [
+            w for w in withdrawals.values() 
+            if w['status'] == 'pending'
+        ]
+        
+        pending.sort(key=lambda x: x['created_at'])
+        return pending
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка получения pending заявок: {e}")
+        return []
+
+# ========== СИСТЕМА ТРАНЗАКЦИЙ ==========
+
+async def log_transaction(user_id, transaction_type, amount, description=""):
+    """Логирует финансовую транзакцию"""
+    try:
+        transaction_id = f"TX{datetime.now().strftime('%Y%m%d%H%M%S')}{random.randint(1000, 9999)}"
+        
+        transaction_data = {
+            'id': transaction_id,
+            'user_id': user_id,
+            'type': transaction_type,  # referral_bonus, withdrawal_request, payment, etc.
+            'amount': amount,
+            'description': description,
+            'timestamp': datetime.now().isoformat(),
+            'balance_after': None  # Можно добавить расчет
+        }
+        
+        # Получаем текущий баланс
+        user_data = await get_user(user_id)
+        if user_data:
+            transaction_data['balance_after'] = user_data.get('referral_earnings', 0)
+        
+        # Сохраняем транзакцию
+        transactions = await read_json(config.TRANSACTIONS_FILE)
+        if not transactions:
+            transactions = {}
+        
+        transactions[transaction_id] = transaction_data
+        await write_json(config.TRANSACTIONS_FILE, transactions)
+        
+        logger.info(f"📊 Записана транзакция {transaction_id}: {transaction_type} {amount} руб.")
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка логирования транзакции: {e}")
+
+async def get_user_transactions(user_id, limit=20):
+    """Получает историю транзакций пользователя"""
+    try:
+        transactions = await read_json(config.TRANSACTIONS_FILE)
+        if not transactions:
+            return []
+        
+        user_transactions = [
+            t for t in transactions.values() 
+            if t['user_id'] == user_id
+        ]
+        
+        # Сортируем по дате
+        user_transactions.sort(key=lambda x: x['timestamp'], reverse=True)
+        
+        return user_transactions[:limit]
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка получения транзакций: {e}")
+        return []
+
+# ========== ДОПОЛНИТЕЛЬНЫЕ ФУНКЦИИ ==========
+
+async def get_available_balance(user_id):
+    """Получает доступный для вывода баланс"""
+    try:
+        user_data = await get_user(user_id)
+        if not user_data:
+            return 0
+        
+        total = user_data.get('referral_earnings', 0)
+        reserved = user_data.get('reserved_for_withdrawal', 0)
+        
+        return max(0, total - reserved)
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка получения доступного баланса: {e}")
+        return 0
+
+async def get_referral_payments_by_referred(referred_id):
+    """Получает платежи конкретного реферала"""
+    try:
+        ref_payments = await read_json('referral_payments.json')
+        if not ref_payments:
+            return []
+        
+        payments = [
+            p for p in ref_payments.values() 
+            if p['referred_id'] == referred_id
+        ]
+        
+        return payments
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка получения платежей реферала: {e}")
+        return []
+
+async def get_total_withdrawn(user_id):
+    """Получает общую сумму выведенных средств"""
+    try:
+        withdrawals = await read_json(config.WITHDRAWALS_FILE)
+        if not withdrawals:
+            return 0
+        
+        user_withdrawals = [
+            w for w in withdrawals.values() 
+            if w['user_id'] == user_id and w['status'] == 'completed'
+        ]
+        
+        return sum(w['amount'] for w in user_withdrawals)
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка получения суммы выводов: {e}")
+        return 0
 
 # ========== ИНВАЙТ-КОДЫ ==========
 

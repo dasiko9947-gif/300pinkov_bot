@@ -36,6 +36,7 @@ admin_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="📊 Статистика"), KeyboardButton(text="👥 Пользователи")],
         [KeyboardButton(text="💳 Платежи"), KeyboardButton(text="🎫 Инвайт-коды")],
+        [KeyboardButton(text="📤 Заявки на вывод"), KeyboardButton(text="📈 Финансы")],
         [KeyboardButton(text="🔙 Главное меню")]
     ],
     resize_keyboard=True
@@ -113,9 +114,8 @@ def get_my_rank_keyboard():
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-# Реферальная клавиатура
 def get_my_referral_keyboard():
-    """Клавиатура для реферальной системы"""
+    """Клавиатура для реферальной системы БЕЗ кнопки вывода"""
     keyboard = [
         [InlineKeyboardButton(text="📤 Отправить приглашение", switch_inline_query="invite")],
         [InlineKeyboardButton(text="💰 Мои начисления", callback_data="my_earnings")],

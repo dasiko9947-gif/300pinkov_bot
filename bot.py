@@ -3,6 +3,8 @@ import logging
 import payments
 from datetime import datetime
 import random
+import math 
+from aiogram.fsm.storage.base import StorageKey
 from aiogram import Bot, Dispatcher, F
 from aiogram import exceptions
 from aiogram.filters import Command, CommandStart
@@ -33,17 +35,177 @@ from keyboards import (
 )
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-# В начале файла добавь новые состояния
-class UserStates(StatesGroup):
-    waiting_for_archetype = State()
-    waiting_for_invite = State()
-    waiting_for_timezone = State()  # Новое состояние
-    waiting_for_ready = State()     # Новое состояние
 
 # Инициализация планировщика
 import pytz
 scheduler = AsyncIOScheduler(timezone=pytz.timezone(config.TIMEZONE))
+# В начале файла, после других импортов
+from datetime import datetime, timedelta
+import uuid
+from typing import List, Dict, Any
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.filters import StateFilter
 
+# ДОБАВЛЯЕМ НОВЫЕ СОСТОЯНИЯ
+class UserStates(StatesGroup):
+    waiting_for_archetype = State()
+    waiting_for_invite = State()
+    waiting_for_timezone = State()
+    waiting_for_ready = State()
+    # Новые состояния для вывода
+    waiting_for_withdrawal_amount = State()
+    waiting_for_withdrawal_method = State()
+    waiting_for_withdrawal_details = State()
+    confirm_withdrawal = State()
+    # Состояния для админской обработки выводов
+    admin_waiting_withdrawal_action = State()
+    admin_waiting_withdrawal_comment = State()
+
+class ReferralNotifications:
+    """Класс для уведомлений реферальной системы"""
+    
+    @staticmethod
+    async def send_referral_bonus_notification(bot, referrer_id: int, bonus_info: dict):
+        """Отправляет уведомление о реферальном бонусе"""
+        try:
+            # БЕЗОПАСНАЯ ПРОВЕРКА referrer_id
+            if not referrer_id:
+                logger.warning(f"⚠️ Пропуск уведомления: referrer_id is None")
+                return
+                
+            message_text = (
+                f"🎉 <b>РЕФЕРАЛЬНЫЙ БОНУС!</b>\n\n"
+                f"Ваш реферал <b>{bonus_info.get('referred_name', 'Пользователь')}</b> "
+                f"оплатил подписку!\n\n"
+                f"💰 <b>Начислено:</b> {bonus_info['bonus_amount']} руб.\n"
+                f"📊 <b>Процент:</b> {bonus_info['percent']}%\n"
+                f"💳 <b>Сумма платежа:</b> {bonus_info['payment_amount']} руб.\n\n"
+                f"🏆 <b>Ваш текущий баланс:</b> {bonus_info.get('new_balance', 0)} руб.\n\n"
+                f"💪 Продолжайте приглашать друзей!"
+            )
+            
+            await bot.send_message(
+                chat_id=int(referrer_id),  # УБЕЖДАЕМСЯ ЧТО INT
+                text=message_text
+            )
+            logger.info(f"✅ Уведомление о бонусе отправлено рефереру {referrer_id}")
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка отправки уведомления рефереру {referrer_id}: {e}")
+    
+    @staticmethod
+    async def send_withdrawal_request_notification(bot, admin_id: int, withdrawal_data: dict):
+        """Отправляет уведомление админу о новой заявке на вывод"""
+        try:
+            # БЕЗОПАСНЫЙ ДОСТУП К ДАННЫМ
+            withdrawal_id = withdrawal_data.get('id', 'N/A')
+            user_name = withdrawal_data.get('user_name', 'Неизвестно')
+            user_username = withdrawal_data.get('user_username', 'без username')
+            user_id = withdrawal_data.get('user_id', 'N/A')
+            amount = withdrawal_data.get('amount', 0)
+            amount_after_fee = withdrawal_data.get('amount_after_fee', 0)
+            fee = withdrawal_data.get('fee', 0)
+            fee_percent = withdrawal_data.get('fee_percent', 0)
+            method = withdrawal_data.get('method', 'Неизвестно')
+            details = withdrawal_data.get('details', 'Не указаны')
+            created_at = withdrawal_data.get('created_at', '')
+            
+            message_text = (
+                f"📤 <b>НОВАЯ ЗАЯВКА НА ВЫВОД</b>\n\n"
+                f"🆔 ID: <code>{withdrawal_data.get('id', 'N/A')}</code>\n"
+                f"👤 Пользователь: {withdrawal_data.get('user_name', 'Неизвестно')}\n"
+                f"📱 @{withdrawal_data.get('user_username', 'без username')}\n"
+                f"🆔 User ID: {withdrawal_data.get('user_id', 'N/A')}\n\n"
+                f"💰 <b>Сумма:</b> {withdrawal_data.get('amount', 0)} руб.\n"
+                f"🎯 <b>Минимум:</b> {config.MIN_WITHDRAWAL} руб. (без комиссии)\n\n"  # Изменили
+                f"💳 <b>Способ:</b> {withdrawal_data.get('method', 'Неизвестно')}\n"
+                f"📝 <b>Реквизиты:</b>\n<code>{withdrawal_data.get('details', 'Не указаны')}</code>\n\n"
+            )
+            
+            # БЕЗОПАСНО ФОРМАТИРУЕМ ДАТУ
+            if created_at and len(created_at) > 10:
+                formatted_date = created_at[:19].replace('T', ' ')
+                message_text += f"📅 <b>Дата:</b> {formatted_date}\n\n"
+            
+            message_text += f"Действия:"
+            
+            keyboard = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text="✅ Одобрить", 
+                            callback_data=f"admin_withdraw_approve_{withdrawal_id}"
+                        ),
+                        InlineKeyboardButton(
+                            text="❌ Отклонить", 
+                            callback_data=f"admin_withdraw_reject_{withdrawal_id}"
+                        )
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            text="📋 Все заявки", 
+                            callback_data="admin_withdrawals_list"
+                        )
+                    ]
+                ]
+            )
+            
+            await bot.send_message(
+                chat_id=admin_id,
+                text=message_text,
+                reply_markup=keyboard
+            )
+            logger.info(f"✅ Уведомление о выводе отправлено админу")
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка отправки уведомления админу: {e}")
+    
+    @staticmethod
+    async def send_withdrawal_status_notification(bot, user_id: int, withdrawal_data: dict, status: str, comment: str = ""):
+        """Отправляет уведомление пользователю о статусе вывода"""
+        try:
+            # БЕЗОПАСНЫЙ ДОСТУП К ДАННЫМ
+            withdrawal_id = withdrawal_data.get('id', 'N/A')
+            amount = withdrawal_data.get('amount', 0)
+            method = withdrawal_data.get('method', 'Неизвестно')
+            amount_after_fee = withdrawal_data.get('amount_after_fee', 0)
+            fee = withdrawal_data.get('fee', 0)
+            updated_at = withdrawal_data.get('updated_at', withdrawal_data.get('created_at', ''))
+            
+            status_texts = {
+                "processing": "⏳ <b>Ваша заявка на вывод обрабатывается</b>",
+                "completed": "✅ <b>Вывод средств завершен</b>",
+                "rejected": "❌ <b>Заявка на вывод отклонена</b>",
+                "cancelled": "🚫 <b>Вывод отменен</b>"
+            }
+            
+            message_text = (
+                f"{status_texts.get(status, '📋 <b>Статус заявки изменен</b>')}\n\n"
+                f"🆔 <b>Номер заявки:</b> {withdrawal_id}\n"
+                f"💰 <b>Сумма:</b> {amount} руб.\n"
+                f"💳 <b>Способ:</b> {method}\n\n"
+            )
+            
+            if comment:
+                message_text += f"📝 <b>Комментарий:</b> {comment}\n\n"
+            
+            if status == "completed":
+                message_text += f"💸 <b>Зачислено:</b> {amount_after_fee} руб.\n"
+                message_text += f"📊 <b>Комиссия:</b> {fee} руб.\n\n"
+            
+            # БЕЗОПАСНО ФОРМАТИРУЕМ ДАТУ
+            if updated_at and len(updated_at) > 10:
+                formatted_date = updated_at[:19].replace('T', ' ')
+                message_text += f"📅 <b>Дата:</b> {formatted_date}"
+            
+            await bot.send_message(
+                chat_id=user_id,
+                text=message_text
+            )
+            logger.info(f"✅ Уведомление о статусе вывода отправлено пользователю {user_id}")
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка отправки статуса вывода пользователю {user_id}: {e}")
 # pyright: reportAttributeAccessIssue=false
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -561,17 +723,30 @@ async def reset_me_command(message: Message, state: FSMContext):
         "Спасибо, что был с нами! 👋"
     )
 
-
-
 @dp.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
-    """Обработчик команды /start с улучшенной диагностикой"""
+    """Обработчик команды /start с реферальной системой"""
     user = message.from_user
     if not user:
         await message.answer("Ошибка: не удалось получить информацию о пользователе")
         return
         
     args = message.text.split() if message.text else []
+    referrer_id = None
+    
+    # Проверяем реферальный ID (если есть в аргументах)
+    if len(args) > 1:
+        try:
+            referrer_id = int(args[1])
+            # Проверяем, что реферер существует и не является самим пользователем
+            referrer_data = await utils.get_user(referrer_id)
+            if not referrer_data or referrer_id == user.id:
+                referrer_id = None
+            else:
+                logger.info(f"📝 Пользователь {user.id} перешел по реферальной ссылке от {referrer_id}")
+        except ValueError:
+            referrer_id = None
+            logger.warning(f"⚠️ Неверный реферальный ID в аргументах: {args[1]}")
     
     # Очищаем состояние
     try:
@@ -590,6 +765,11 @@ async def cmd_start(message: Message, state: FSMContext):
         
         # Получаем случайную реплику приветствия
         greeting = await BotReplies.get_welcome_back_reply(gender, welcome_name)
+        
+        # Проверяем, был ли пользователь приглашен, но связь не сохранена
+        if referrer_id and not user_data.get('invited_by'):
+            await utils.save_referral_relationship(user.id, referrer_id)
+            logger.info(f"📝 Восстановлена реферальная связь: {user.id} -> {referrer_id}")
             
         await message.answer(
             greeting,
@@ -597,6 +777,30 @@ async def cmd_start(message: Message, state: FSMContext):
         )
         await update_user_activity(user.id)
     else:
+        # Новый пользователь - начинаем регистрацию
+        await message.answer(
+            "👋 <b>Добро пожаловать в челлендж «300 ПИНКОВ»!</b>\n\n"
+            "• Этот бот не про мотивацию. Это <b>система</b>, которая заставляет мозг и тело работать по-новому. Как тренажёрный зал для привычек и мышления.\n\n"
+            
+            "🎯 <b>Что тебя ждет:</b>\n"
+            "• Ежедневные задания для саморазвития\n"
+            "• 300 дней непрерывного роста\n" 
+            "• Система рангов и достижений\n\n"
+
+            "💪 <b>Как это работает:</b>\n"
+            "Каждый день в 9:00 ты получаешь ПИНОК.\n"
+            "У тебя есть время до 23:59, чтобы его выполнить.\n"
+            "Честность перед собой - главное правило!\n\n"
+            "⬇️ <b>Давай настроим твой челлендж!</b>",
+            reply_markup=ReplyKeyboardMarkup(
+                keyboard=[[KeyboardButton(text="➡️ Продолжить настройку")]],
+                resize_keyboard=True
+            )
+        )
+        
+        # Сохраняем реферальный ID в состоянии
+        await state.update_data(referrer_id=referrer_id)
+        await state.set_state(UserStates.waiting_for_timezone)
         # Новый пользователь - начинаем регистрацию
         await message.answer(
             "👋 <b>Добро пожаловать в челлендж «300 ПИНКОВ»!</b>\n\n"
@@ -707,7 +911,7 @@ async def process_timezone_selection(message: Message, state: FSMContext):
 
 @dp.message(UserStates.waiting_for_ready)
 async def process_ready_confirmation(message: Message, state: FSMContext):
-    """ШАГ 6: Обработка подтверждения готовности"""
+    """ШАГ 6: Обработка подтверждения готовности с сохранением реферальной связи"""
     user = message.from_user
     if not user:
         await message.answer("Ошибка: не удалось получить информацию о пользователе")
@@ -730,6 +934,7 @@ async def process_ready_confirmation(message: Message, state: FSMContext):
     user_data = await state.get_data()
     timezone = user_data.get('timezone', 'Europe/Moscow')
     archetype = user_data.get('archetype', 'spartan')
+    referrer_id = user_data.get('referrer_id')  # Получаем реферальный ID из состояния
     
     # Создаем запись пользователя
     new_user_data = {
@@ -738,7 +943,7 @@ async def process_ready_confirmation(message: Message, state: FSMContext):
         "first_name": user.first_name or "",
         "last_name": user.last_name or "",
         "archetype": archetype,
-        "timezone": timezone,  # Сохраняем часовой пояс
+        "timezone": timezone,
         "current_day": 0,
         "completed_tasks": 0,
         "rank": "putnik",
@@ -748,12 +953,40 @@ async def process_ready_confirmation(message: Message, state: FSMContext):
         "last_task_sent": None,
         "task_completed_today": False,
         "debts": [],
-        "last_activity": datetime.now().isoformat()
+        "last_activity": datetime.now().isoformat(),
+        "invited_by": referrer_id,  # Сохраняем кто пригласил
+        "reserved_for_withdrawal": 0,  # Для системы вывода
+        "referral_stats": {
+            "total_earned": 0,
+            "payments_count": 0,
+            "last_payment": None
+        }
     }
     
     await save_user(user.id, new_user_data)
     
-    # Отправляем первое задание (используем функцию из utils)
+    # Сохраняем реферальную связь
+    if referrer_id:
+        success = await utils.save_referral_relationship(user.id, referrer_id)
+        if success:
+            logger.info(f"✅ Создана реферальная связь: {user.id} -> {referrer_id}")
+            
+            # Отправляем уведомление рефереру
+            try:
+                referrer_data = await utils.get_user(referrer_id)
+                if referrer_data:
+                    await bot.send_message(
+                        chat_id=referrer_id,
+                        text=f"🎉 <b>НОВЫЙ РЕФЕРАЛ!</b>\n\n"
+                             f"Пользователь <b>{user.first_name}</b> зарегистрировался по вашей ссылке!\n\n"
+                             f"Теперь вы будете получать {config.REFERRAL_LEVELS['legioner']['percent']}% "
+                             f"от его платежей в системе!\n\n"
+                             f"💪 Продолжайте приглашать друзей!"
+                    )
+            except Exception as e:
+                logger.error(f"❌ Ошибка уведомления реферера {referrer_id}: {e}")
+    
+    # Отправляем первое задание
     task_id, task = await utils.get_task_by_day(1, archetype)
     
     if task:
@@ -784,7 +1017,6 @@ async def process_ready_confirmation(message: Message, state: FSMContext):
     
     await state.clear()
     await update_user_activity(user.id)
-
 @dp.message(UserStates.waiting_for_archetype)
 async def process_archetype(message: Message, state: FSMContext):
     """Обработка выбора архетипа"""
@@ -1429,8 +1661,7 @@ async def show_invite_codes(message: Message):
     
     await message.answer(message_text, reply_markup=keyboards.get_invite_codes_keyboard())
 
-# НОВЫЙ обработчик "Мой легион ⚔️"
-# ЗАМЕНЯЕМ старый обработчик на новый:
+# Обновляем обработчик раздела "Мой легион"
 @dp.message(F.text == "Мой легион ⚔️")
 async def show_my_legion(message: Message):
     """Показывает реферальную систему сразу при входе в Мой легион"""
@@ -1462,11 +1693,12 @@ async def show_my_legion(message: Message):
         f"• Заработано: {earnings} руб.\n"
         f"• Текущий уровень: {ref_level['name']}\n"
         f"• Ваш процент: {ref_level['percent']}%\n\n"
+        f"💸 <b>Выводи заработанные средства одним кликом!</b>\n\n"
         f"📤 <b>Просто нажми кнопку ниже чтобы отправить приглашение!</b>\n"
         f"Выбери друга из списка контактов - мы отправим красивое сообщение с объяснением системы."
     )
     
-    await message.answer(message_text, reply_markup=keyboards.get_my_referral_keyboard())
+    await message.answer(message_text, reply_markup=get_my_referral_keyboard())
 @dp.message(F.text == "Реферальная программа 🤝")
 async def show_referral(message: Message):
     """Показывает реферальную программу с кнопкой отправки приглашения"""
@@ -1874,7 +2106,7 @@ async def back_to_tariffs_handler(callback: CallbackQuery):
         await callback.answer("❌ Ошибка")
 
 async def activate_subscription_after_payment(payment_data, callback):
-    """Активация подписки после успешной оплаты"""
+    """Активация подписки после успешной оплаты с реферальным начислением"""
     if not callback:
         return
         
@@ -1897,14 +2129,43 @@ async def activate_subscription_after_payment(payment_data, callback):
     if tariff_id == "pair_year":
         await activate_pair_subscription(user_data, user_id, tariff, callback)
     else:
-        # ДОБАВЛЯЕМ ДНИ ПОДПИСКИ (важно: добавляем к текущей дате)
+        # ДОБАВЛЯЕМ ДНИ ПОДПИСКИ
         updated_user_data = await utils.add_subscription_days(user_data, tariff['days'])
         
-        # ЛОГИРУЕМ для отладки
-        logger.info(f"💰 Активация подписки для пользователя {user_id}")
-        logger.info(f"📅 Тариф: {tariff['name']}, дней: {tariff['days']}")
-        logger.info(f"📊 Старая дата окончания: {user_data.get('subscription_end', 'нет')}")
-        logger.info(f"📊 Новая дата окончания: {updated_user_data.get('subscription_end', 'нет')}")
+        # НАЧИСЛЯЕМ РЕФЕРАЛЬНЫЙ БОНУС
+        referral_result = await utils.process_referral_payment(
+            user_id, 
+            tariff['price'], 
+            tariff_id
+        )
+        
+        # ПРАВИЛЬНО ОБРАБАТЫВАЕМ РЕЗУЛЬТАТ
+        if referral_result and len(referral_result) == 4:
+            success, referrer_id, bonus_amount, percent = referral_result
+            
+            if success and referrer_id and bonus_amount > 0:
+                # Получаем новый баланс реферера
+                referrer_data = await utils.get_user(referrer_id)
+                new_balance = referrer_data.get('referral_earnings', 0) if referrer_data else 0
+                
+                # Отправляем уведомление рефереру
+                await ReferralNotifications.send_referral_bonus_notification(
+                    bot=bot,
+                    referrer_id=referrer_id,
+                    bonus_info={
+                        'bonus_amount': bonus_amount,
+                        'percent': percent,
+                        'payment_amount': tariff['price'],
+                        'referred_name': user_data.get('first_name', 'Пользователь'),
+                        'new_balance': new_balance
+                    }
+                )
+        else:
+            # Если что-то пошло не так
+            success = False
+            referrer_id = None
+            bonus_amount = 0
+            percent = 0
         
         await utils.save_user(user_id, updated_user_data)
         
@@ -1912,12 +2173,17 @@ async def activate_subscription_after_payment(payment_data, callback):
             f"✅ <b>Подписка активирована!</b>\n\n"
             f"💎 Тариф: {tariff['name']}\n"
             f"⏰ Срок: {tariff['days']} дней\n"
+            f"💰 Стоимость: {tariff['price']} руб.\n"
             f"🎯 Теперь у вас есть доступ ко всем заданиям!\n\n"
-            f"Задания будут приходить ежедневно в 9:00 🕘"
         )
         
-        success = await safe_edit_message(callback, success_message)
-        if not success:
+        if success and bonus_amount > 0:
+            success_message += f"🎉 <b>Вы принесли доход своему рефереру: {bonus_amount} руб.!</b>\n\n"
+        
+        success_message += f"Задания будут приходить ежедневно в 9:00 🕘"
+        
+        success_edit = await safe_edit_message(callback, success_message)
+        if not success_edit:
             await safe_send_message(callback, success_message)
         
         # УВЕДОМЛЯЕМ админа об успешной активации
@@ -1931,25 +2197,20 @@ async def activate_subscription_after_payment(payment_data, callback):
                     f"💎 Тариф: {tariff['name']}\n"
                     f"💰 Сумма: {tariff['price']} руб.\n"
                     f"📅 Дней: {tariff['days']}\n"
-                    f"⏰ Дата окончания: {updated_user_data.get('subscription_end', 'неизвестно')}"
+                    f"⏰ Дата окончания: {updated_user_data.get('subscription_end', 'неизвестно')}\n\n"
                 )
+                
+                if success and referrer_id:
+                    admin_message += (
+                        f"🤝 <b>Реферальное начисление:</b>\n"
+                        f"• Реферер: {referrer_id}\n"
+                        f"• Бонус: {bonus_amount} руб.\n"
+                        f"• Процент: {percent}%\n"
+                    )
+                
                 await bot.send_message(config.ADMIN_ID, admin_message)
         except Exception as e:
             logger.error(f"Ошибка уведомления админа: {e}")
-        updated_user_data = await utils.add_subscription_days(user_data, tariff['days'])
-        await utils.save_user(user_id, updated_user_data)
-        
-        success_message = (
-            f"✅ <b>Подписка активирована!</b>\n\n"
-            f"💎 Тариф: {tariff['name']}\n"
-            f"⏰ Срок: {tariff['days']} дней\n"
-            f"🎯 Теперь у вас есть доступ ко всем заданиям!\n\n"
-            f"Задания будут приходить ежедневно в 9:00 🕘"
-        )
-        
-        success = await safe_edit_message(callback, success_message)
-        if not success:
-            await safe_send_message(callback, success_message)
 
 async def activate_pair_subscription(user_data, user_id, tariff, callback):
     """Активация парной подписки"""
@@ -2081,6 +2342,1152 @@ async def back_to_main(callback: CallbackQuery):
     
     await callback.answer()
 
+# ========== ВЫВОД СРЕДСТВ ==========
+
+@dp.message(F.text == "💰 Вывод средств")
+async def withdrawal_start(message: Message):
+    """Начало процедуры вывода - показывает баланс и кнопку вывода"""
+    user = message.from_user
+    if not user:
+        return
+        
+    user_id = user.id
+    user_data = await utils.get_user(user_id)
+    
+    if not user_data:
+        await message.answer("❌ Сначала зарегистрируйтесь через /start")
+        return
+    
+    # Получаем балансы
+    total_balance = user_data.get('referral_earnings', 0)
+    reserved = user_data.get('reserved_for_withdrawal', 0)
+    available_balance = total_balance - reserved
+    
+    # Получаем статистику выводов
+    total_withdrawn = await utils.get_total_withdrawn(user_id)
+    
+    # Создаем клавиатуру
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="💸 Вывести средства", callback_data="start_withdrawal")],
+            [InlineKeyboardButton(text="📋 История выводов", callback_data="withdrawal_history")],
+            [InlineKeyboardButton(text="📊 Статистика", callback_data="withdrawal_stats")],
+            [InlineKeyboardButton(text="🔙 Главное меню", callback_data="back_to_main")]
+        ]
+    )
+    
+    message_text = (
+        f"💰 <b>ВЫВОД СРЕДСТВ</b>\n\n"
+        f"💎 <b>Общий баланс:</b> {total_balance} руб.\n"
+        f"✅ <b>Доступно для вывода:</b> {available_balance} руб.\n"
+        f"⏳ <b>В обработке:</b> {reserved} руб.\n"
+        f"📤 <b>Уже выведено:</b> {total_withdrawn} руб.\n\n"
+        f"📊 <b>Условия вывода:</b>\n"
+        f"• Минимальная сумма: {config.MIN_WITHDRAWAL} руб.\n"
+        f"✅ <b>Без комиссии</b>\n"
+        f"• Срок обработки: 1-3 рабочих дня\n\n"
+        f"💳 <b>Доступные способы:</b>\n"
+        f"• Банковская карта\n"
+
+        f"Выберите действие:"
+    )
+    
+    await message.answer(message_text, reply_markup=keyboard)
+
+@dp.callback_query(F.data == "start_withdrawal")
+async def start_withdrawal_handler(callback: CallbackQuery, state: FSMContext):
+    """Начинает процесс вывода средств"""
+    if not callback or not callback.message:
+        return
+        
+    user = callback.from_user
+    if not user:
+        await callback.answer("Ошибка")
+        return
+        
+    user_id = user.id
+    
+    # Проверяем доступный баланс
+    user_data = await utils.get_user(user_id)
+    if not user_data:
+        await callback.answer("❌ Пользователь не найден")
+        return
+    
+    total_balance = user_data.get('referral_earnings', 0)
+    reserved = user_data.get('reserved_for_withdrawal', 0)
+    available_balance = total_balance - reserved
+    
+    if available_balance < config.MIN_WITHDRAWAL:
+        await callback.answer(
+            f"❌ Минимальная сумма вывода: {config.MIN_WITHDRAWAL} руб.",
+            show_alert=True
+        )
+        return
+    
+    # Запрашиваем сумму
+    await callback.message.edit_text(
+        f"💰 <b>Доступно для вывода:</b> {available_balance} руб.\n"
+        f"💸 <b>Минимальная сумма:</b> {config.MIN_WITHDRAWAL} руб.\n\n"
+        f"📝 <b>Введите сумму для вывода:</b>\n"
+        f"<i>Только число, без руб.</i>"
+    )
+    
+    await state.set_state(UserStates.waiting_for_withdrawal_amount)
+    await state.update_data(user_id=user_id, available_balance=available_balance)
+    await callback.answer()
+
+@dp.message(UserStates.waiting_for_withdrawal_amount)
+async def withdrawal_amount_handler(message: Message, state: FSMContext):
+    """Обработка введенной суммы для вывода"""
+    # Безопасная проверка всех объектов
+    if not message or not message.from_user:
+        return
+    
+    # Безопасно получаем user_id
+    try:
+        user_id = message.from_user.id
+    except AttributeError:
+        return
+    
+    # Проверяем наличие текста
+    if not message.text:
+        await message.answer("❌ Пожалуйста, введите сумму:")
+        return
+    
+    # Получаем данные из состояния
+    state_data = await state.get_data()
+    
+    # Проверяем, что пользователь совпадает
+    if state_data.get('user_id') != user_id:
+        await message.answer("❌ Ошибка доступа")
+        await state.clear()
+        return
+    
+    available_balance = state_data.get('available_balance', 0)
+    
+    try:
+        # Безопасно обрабатываем текст
+        text = message.text.strip()
+        amount = int(text)
+        
+        # Проверяем минимальную сумму (300 руб)
+        if amount < config.MIN_WITHDRAWAL:
+            await message.answer(
+                f"❌ Минимальная сумма вывода: {config.MIN_WITHDRAWAL} руб.\n"
+                f"Доступно: {available_balance} руб.\n"
+                f"Попробуйте еще раз:"
+            )
+            return
+        
+        # Проверяем максимальную сумму
+        if amount > available_balance:
+            await message.answer(
+                f"❌ Недостаточно средств. Доступно: {available_balance} руб.\n"
+                f"Введите другую сумму:"
+            )
+            return
+        
+        # Проверяем лимиты
+        limit_check = await utils.check_withdrawal_limits(user_id, amount)
+        if not limit_check[0]:
+            await message.answer(
+                f"❌ {limit_check[1]}\n"
+                f"Введите другую сумму:"
+            )
+            return
+        
+        # Сохраняем сумму (без комиссии)
+        await state.update_data(
+            amount=amount,
+            amount_to_receive=amount  # Без комиссии - вся сумма
+        )
+        
+        # Показываем методы вывода
+        methods_keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="💳 Банковская карта", callback_data="withdraw_method_bank_card")],
+                [InlineKeyboardButton(text="ЮMoney", callback_data="withdraw_method_yoomoney")],
+                [InlineKeyboardButton(text="🏦 Сбербанк Онлайн", callback_data="withdraw_method_sberbank")],
+                [InlineKeyboardButton(text="💳 Тинькофф", callback_data="withdraw_method_tinkoff")],
+                [InlineKeyboardButton(text="👛 QIWI Кошелек", callback_data="withdraw_method_qiwi")],
+                [InlineKeyboardButton(text="🔙 Отменить", callback_data="withdraw_cancel")]
+            ]
+        )
+        
+        await message.answer(
+            f"✅ <b>Сумма подтверждена:</b> {amount} руб.\n\n"
+            f"🎯 <b>Минимальный вывод:</b> {config.MIN_WITHDRAWAL} руб.\n"
+            f"✅ <b>Без комиссии</b>\n\n"
+            f"💳 <b>Выберите способ получения:</b>",
+            reply_markup=methods_keyboard
+        )
+        
+        await state.set_state(UserStates.waiting_for_withdrawal_method)
+        
+    except ValueError:
+        await message.answer("❌ Пожалуйста, введите число:")
+    except Exception as e:
+        logger.error(f"❌ Ошибка обработки суммы вывода: {e}")
+        await message.answer("❌ Произошла ошибка. Попробуйте позже.")
+        await state.clear()
+
+@dp.callback_query(UserStates.waiting_for_withdrawal_method, F.data.startswith("withdraw_method_"))
+async def withdrawal_method_handler(callback: CallbackQuery, state: FSMContext):
+    """Обработка выбора метода вывода"""
+    # БЕЗОПАСНАЯ ПРОВЕРКА ВСЕХ АТРИБУТОВ
+    if not callback:
+        return
+    
+    if not callback.data:
+        try:
+            await callback.answer("Ошибка данных")
+        except:
+            pass
+        return
+    
+    if not callback.message:
+        try:
+            await callback.answer("Ошибка сообщения")
+        except:
+            pass
+        return
+    
+    # БЕЗОПАСНОЕ ИСПОЛЬЗОВАНИЕ replace
+    try:
+        callback_data = str(callback.data)
+        if callback_data == "withdraw_cancel":
+            # Безопасное редактирование
+            if callback.message:
+                await callback.message.edit_text("❌ Вывод отменен")
+            await state.clear()
+            await callback.answer()
+            return
+        
+        if callback_data.startswith("withdraw_method_"):
+            method_id = callback_data.replace("withdraw_method_", "")
+        else:
+            method_id = ""
+    except AttributeError:
+        try:
+            await callback.answer("❌ Ошибка обработки данных")
+        except:
+            pass
+        return
+    
+    method_name = config.WITHDRAWAL_METHODS.get(method_id, "Неизвестный метод")
+    
+    # Получаем инструкции для метода
+    instructions = {
+        "bank_card": "💳 <b>Введите номер банковской карты (16-19 цифр):</b>\nПример: 2200 1234 5678 9010",
+    }
+    
+    instruction = instructions.get(method_id, "📝 <b>Введите реквизиты для получения средств:</b>")
+    
+    # Сохраняем метод
+    await state.update_data(method=method_id, method_name=method_name)
+    
+    # БЕЗОПАСНОЕ РЕДАКТИРОВАНИЕ СООБЩЕНИЯ
+    try:
+        if callback.message:
+            await callback.message.edit_text(
+                f"📋 <b>Выбран способ:</b> {method_name}\n\n"
+                f"{instruction}\n\n"
+                f"<i>Убедитесь, что реквизиты указаны верно!</i>"
+            )
+        else:
+            # Если нет сообщения, отправляем новое
+            await callback.answer("Ошибка: сообщение не найдено", show_alert=True)
+            return
+    except Exception as e:
+        logger.error(f"❌ Ошибка редактирования сообщения: {e}")
+        try:
+            await callback.answer("Ошибка обновления сообщения")
+        except:
+            pass
+        return
+    
+    await state.set_state(UserStates.waiting_for_withdrawal_details)
+    
+    # Безопасный answer
+    try:
+        await callback.answer()
+    except:
+        pass
+
+@dp.message(UserStates.waiting_for_withdrawal_details)
+async def withdrawal_details_handler(message: Message, state: FSMContext):
+    """Обработка реквизитов вывода (только номер карты)"""
+    if not message or not message.text:
+        await message.answer("❌ Пожалуйста, введите номер карты:")
+        return
+    
+    details = message.text.strip()
+    
+    # Убираем пробелы и проверяем что это цифры
+    card_number = details.replace(" ", "")
+    
+    if not card_number.isdigit():
+        await message.answer("❌ Номер карты должен содержать только цифры. Попробуйте еще раз:")
+        return
+    
+    if len(card_number) < 16 or len(card_number) > 19:
+        await message.answer("❌ Номер карты должен содержать 16-19 цифр. Попробуйте еще раз:")
+        return
+    
+    # Получаем данные из состояния
+    data = await state.get_data()
+    amount = data.get('amount', 0)
+    amount_to_receive = amount  # Без комиссии
+    method = "bank_card"
+    method_name = "Банковская карта"
+    user_id = data.get('user_id', 0)
+    
+    # Сохраняем реквизиты
+    await state.update_data(details=card_number)
+    
+    # Подтверждение
+    confirm_keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Подтвердить вывод", callback_data="withdraw_confirm")],
+            [InlineKeyboardButton(text="❌ Отменить", callback_data="withdraw_cancel")]
+        ]
+    )
+    
+    # Форматируем номер карты для отображения
+    formatted_card = ' '.join([card_number[i:i+4] for i in range(0, len(card_number), 4)])
+    
+    await message.answer(
+        f"📋 <b>ПОДТВЕРЖДЕНИЕ ВЫВОДА</b>\n\n"
+        f"💰 <b>Сумма:</b> {amount} руб.\n"
+        f"✅ <b>Без комиссии</b>\n"
+        f"🎯 <b>Минимум:</b> {config.MIN_WITHDRAWAL} руб.\n\n"
+        f"💳 <b>Способ:</b> {method_name}\n"
+        f"📝 <b>Реквизиты:</b>\n<code>{formatted_card}</code>\n\n"
+        f"<i>Проверьте данные перед подтверждением!</i>",
+        reply_markup=confirm_keyboard
+    )
+    
+    await state.set_state(UserStates.confirm_withdrawal)
+
+@dp.callback_query(UserStates.confirm_withdrawal, F.data.in_(["withdraw_confirm", "withdraw_cancel"]))
+async def withdrawal_confirm_handler(callback: CallbackQuery, state: FSMContext):
+    """Подтверждение или отмена вывода"""
+    if not callback or not callback.message:
+        return
+    
+    if callback.data == "withdraw_cancel":
+        await callback.message.edit_text("❌ Вывод отменен")
+        await state.clear()
+        await callback.answer()
+        return
+    
+    # Получаем данные
+    data = await state.get_data()
+    amount = data.get('amount', 0)
+    method = data.get('method', '')
+    method_name = data.get('method_name', 'Неизвестный метод')
+    details = data.get('details', '')
+    user_id = data.get('user_id', 0)
+    
+    try:
+        # Создаем заявку на вывод
+        success, result = await utils.create_withdrawal_request(
+            user_id=user_id,
+            amount=amount,
+            method=method,
+            details=details
+        )
+        
+        if success:
+            withdrawal_id = result
+            
+            # Получаем данные заявки для уведомления админу
+            withdrawals = await utils.read_json(config.WITHDRAWALS_FILE)
+            withdrawal_data = withdrawals.get(withdrawal_id, {}) if withdrawals else {}
+            
+            if withdrawal_data:
+                # Отправляем уведомление админу
+                await ReferralNotifications.send_withdrawal_request_notification(
+                    bot=bot,
+                    admin_id=config.ADMIN_ID,
+                    withdrawal_data=withdrawal_data
+                )
+            
+            await callback.message.edit_text(
+                f"✅ <b>ЗАЯВКА СОЗДАНА!</b>\n\n"
+                f"🆔 <b>Номер заявки:</b> <code>{withdrawal_id}</code>\n"
+                f"💰 <b>Сумма:</b> {amount} руб.\n"
+                f"💳 <b>Способ:</b> {method_name}\n\n"
+                f"⏳ <b>Статус:</b> Ожидает обработки\n"
+                f"📅 <b>Срок обработки:</b> 1-3 рабочих дня\n\n"
+                f"📞 <b>По вопросам:</b> {config.SUPPORT_USERNAME}\n\n"
+                f"<i>Вы получите уведомление при изменении статуса.</i>"
+            )
+            
+            logger.info(f"✅ Создана заявка на вывод #{withdrawal_id} от пользователя {user_id}")
+            
+        else:
+            await callback.message.edit_text(
+                f"❌ <b>ОШИБКА СОЗДАНИЯ ЗАЯВКИ</b>\n\n"
+                f"{result}\n\n"
+                f"Попробуйте позже или обратитесь в поддержку: {config.SUPPORT_USERNAME}"
+            )
+        
+        await state.clear()
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка подтверждения вывода: {e}")
+        await callback.message.edit_text(
+            "❌ <b>Произошла ошибка при создании заявки</b>\n\n"
+            "Попробуйте позже или обратитесь в поддержку."
+        )
+        await state.clear()
+    
+    await callback.answer()
+@dp.callback_query(F.data == "show_min_withdrawal")
+async def show_min_withdrawal_handler(callback: CallbackQuery):
+    """Показывает информацию о минимальном выводе"""
+    user_id = callback.from_user.id
+    user_data = await utils.get_user(user_id)
+    
+    if user_data:
+        earnings = user_data.get('referral_earnings', 0)
+        reserved = user_data.get('reserved_for_withdrawal', 0)
+        available = earnings - reserved
+        
+        if available < config.MIN_WITHDRAWAL:
+            needed = config.MIN_WITHDRAWAL - available
+            
+            await callback.answer(
+                f"💰 Доступно: {available} руб.\n"
+                f"🎯 Нужно ещё: {needed} руб. до {config.MIN_WITHDRAWAL} руб.\n"
+                f"✅ Без комиссии\n\n"
+                f"Пригласите {math.ceil(needed / 75)} друзей "
+                f"и сможете вывести средства!",  # ~75 руб с каждого (30% от 250 руб)
+                show_alert=True
+            )
+    else:
+        await callback.answer(
+            f"🎯 Минимальный вывод: {config.MIN_WITHDRAWAL} руб.\n"
+            f"✅ Без комиссии",
+            show_alert=True
+        )
+@dp.callback_query(F.data == "withdrawal_history")
+async def withdrawal_history_handler(callback: CallbackQuery):
+    """Показывает историю выводов пользователя"""
+    if not callback or not callback.message:
+        return
+    
+    user = callback.from_user
+    if not user:
+        await callback.answer("Ошибка")
+        return
+    
+    user_id = user.id
+    withdrawals = await utils.get_user_withdrawals(user_id, limit=10)
+    
+    if not withdrawals:
+        await callback.message.edit_text(
+            "📋 <b>ИСТОРИЯ ВЫВОДОВ</b>\n\n"
+            "У вас еще не было выводов средств."
+        )
+        await callback.answer()
+        return
+    
+    message_text = "📋 <b>ИСТОРИЯ ВЫВОДОВ</b>\n\n"
+    
+    for i, w in enumerate(withdrawals, 1):
+        status_icons = {
+            'pending': '⏳',
+            'processing': '🔄', 
+            'completed': '✅',
+            'rejected': '❌',
+            'cancelled': '🚫'
+        }
+        
+        status_text = {
+            'pending': 'Ожидает',
+            'processing': 'В обработке',
+            'completed': 'Завершен',
+            'rejected': 'Отклонен',
+            'cancelled': 'Отменен'
+        }
+        
+        icon = status_icons.get(w.get('status', ''), '📋')
+        status = status_text.get(w.get('status', ''), w.get('status', 'Неизвестно'))
+        
+        message_text += (
+            f"{icon} <b>Заявка #{w.get('id', 'N/A')[:8]}</b>\n"
+            f"💰 Сумма: {w.get('amount', 0)} руб.\n"
+            f"📊 Статус: {status}\n"
+            f"📅 Дата: {w.get('created_at', 'N/A')[:10]}\n"
+        )
+        
+        if w.get('status') == 'completed':
+            message_text += f"💸 Получено: {w.get('amount_after_fee', 0):.2f} руб.\n"
+        
+        message_text += "\n"
+    
+    if len(withdrawals) == 10:
+        message_text += "\n<i>Показаны последние 10 заявок</i>"
+    
+    await callback.message.edit_text(message_text)
+    await callback.answer()
+
+@dp.callback_query(F.data == "withdrawal_stats")
+async def withdrawal_stats_handler(callback: CallbackQuery):
+    """Показывает статистику по выводам"""
+    if not callback or not callback.message:
+        return
+    
+    user = callback.from_user
+    if not user:
+        await callback.answer("Ошибка")
+        return
+    
+    user_id = user.id
+    user_data = await utils.get_user(user_id)
+    
+    if not user_data:
+        await callback.answer("❌ Пользователь не найден")
+        return
+    
+    # Получаем данные
+    total_balance = user_data.get('referral_earnings', 0)
+    reserved = user_data.get('reserved_for_withdrawal', 0)
+    available = total_balance - reserved
+    total_withdrawn = await utils.get_total_withdrawn(user_id)
+    
+    # Получаем историю для статистики
+    withdrawals = await utils.get_user_withdrawals(user_id, limit=100)
+    
+    # Считаем статистику
+    completed_withdrawals = [w for w in withdrawals if w.get('status') == 'completed']
+    pending_withdrawals = [w for w in withdrawals if w.get('status') in ['pending', 'processing']]
+    
+    total_completed = sum(w.get('amount', 0) for w in completed_withdrawals)
+    total_pending = sum(w.get('amount', 0) for w in pending_withdrawals)
+    total_fees = sum(w.get('fee', 0) for w in completed_withdrawals)
+    
+    # Средний вывод
+    avg_withdrawal = total_completed / len(completed_withdrawals) if completed_withdrawals else 0
+    
+    message_text = (
+        f"📊 <b>СТАТИСТИКА ВЫВОДОВ</b>\n\n"
+        f"💰 <b>Балансы:</b>\n"
+        f"• Общий: {total_balance} руб.\n"
+        f"• Доступно: {available} руб.\n"
+        f"• В обработке: {reserved} руб.\n\n"
+        
+        f"📈 <b>Выводы:</b>\n"
+        f"• Всего выведено: {total_withdrawn} руб.\n"
+        f"• Завершено заявок: {len(completed_withdrawals)}\n"
+        f"• В обработке: {len(pending_withdrawals)}\n"
+        f"• Всего комиссий: {total_fees:.2f} руб.\n"
+        f"• Средний вывод: {avg_withdrawal:.2f} руб.\n\n"
+        
+        f"⚙️ <b>Настройки:</b>\n"
+        f"• Минимальный вывод: {config.MIN_WITHDRAWAL} руб.\n"
+        f"• Комиссия: {config.WITHDRAWAL_FEE}%\n"
+        f"• Макс. в день: {config.DAILY_WITHDRAWAL_LIMIT} руб.\n"
+    )
+    
+    await callback.message.edit_text(message_text)
+    await callback.answer()
+
+# ========== АДМИНСКАЯ ПАНЕЛЬ ДЛЯ ВЫВОДОВ ==========
+
+@dp.message(F.text == "📤 Заявки на вывод")
+async def admin_withdrawals_panel(message: Message):
+    """Показывает админскую панель для обработки выводов"""
+    user = message.from_user
+    if not user or user.id != config.ADMIN_ID:
+        return
+    
+    # Получаем pending заявки
+    pending_withdrawals = await utils.get_pending_withdrawals()
+    
+    if not pending_withdrawals:
+        await message.answer(
+            "📤 <b>ЗАЯВКИ НА ВЫВОД</b>\n\n"
+            "Нет заявок, ожидающих обработки."
+        )
+        return
+    
+    # Создаем клавиатуру с заявками
+    keyboard_buttons = []
+    
+    for w in pending_withdrawals[:10]:  # Ограничиваем 10 заявками
+        w_id = w.get('id', 'N/A')
+        w_amount = w.get('amount', 0)
+        w_name = w.get('user_name', 'Неизвестно')
+        
+        button_text = f"{w_id[:8]} | {w_amount} руб. | {w_name}"
+        callback_data = f"admin_withdraw_view_{w_id}"
+        keyboard_buttons.append([InlineKeyboardButton(text=button_text, callback_data=callback_data)])
+    
+    # Добавляем кнопки управления
+    keyboard_buttons.append([
+        InlineKeyboardButton(text="📋 Все заявки", callback_data="admin_withdrawals_all"),
+        InlineKeyboardButton(text="📊 Статистика", callback_data="admin_withdraw_stats")
+    ])
+    
+    keyboard_buttons.append([
+        InlineKeyboardButton(text="🔙 Назад в админку", callback_data="admin_back")
+    ])
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
+    
+    await message.answer(
+        f"📤 <b>ЗАЯВКИ НА ВЫВОД</b>\n\n"
+        f"⏳ Ожидают обработки: {len(pending_withdrawals)}\n\n"
+        f"Выберите заявку для обработки:",
+        reply_markup=keyboard
+    )
+
+@dp.callback_query(F.data.startswith("admin_withdraw_view_"))
+async def admin_withdrawal_view_handler(callback: CallbackQuery):
+    """Показывает детали заявки на вывод"""
+    # БЕЗОПАСНАЯ ПРОВЕРКА ВСЕГО
+    if not callback:
+        return
+    
+    if not hasattr(callback, 'from_user') or not callback.from_user:
+        # Если не можем получить from_user, просто выходим
+        return
+    
+    if callback.from_user.id != config.ADMIN_ID:
+        # Безопасно пытаемся ответить, но если callback.answer тоже None, игнорируем
+        try:
+            await callback.answer("⛔ Нет доступа")
+        except:
+            pass
+        return
+    
+    if not hasattr(callback, 'data') or not callback.data:
+        try:
+            await callback.answer("Ошибка данных")
+        except:
+            pass
+        return
+    
+    # БЕЗОПАСНОЕ ИСПОЛЬЗОВАНИЕ replace
+    try:
+        callback_data = str(callback.data) if callback.data else ""
+        withdrawal_id = callback_data.replace("admin_withdraw_view_", "")
+    except AttributeError:
+        try:
+            await callback.answer("❌ Ошибка обработки данных")
+        except:
+            pass
+        return
+    
+    if not withdrawal_id:
+        try:
+            await callback.answer("❌ ID заявки не найден")
+        except:
+            pass
+        return
+    
+    # Получаем данные заявки
+    withdrawals = await utils.read_json(config.WITHDRAWALS_FILE)
+    
+    if not isinstance(withdrawals, dict) or withdrawal_id not in withdrawals:
+        try:
+            await callback.answer("❌ Заявка не найдена")
+        except:
+            pass
+        return
+    
+    withdrawal = withdrawals[withdrawal_id]
+    
+    if not isinstance(withdrawal, dict):
+        try:
+            await callback.answer("❌ Неверный формат данных заявки")
+        except:
+            pass
+        return
+    
+    # Безопасно извлекаем данные
+    created_at = withdrawal.get('created_at', '')
+    formatted_date = 'Неизвестно'
+    if created_at and isinstance(created_at, str) and len(created_at) > 10:
+        try:
+            formatted_date = created_at[:19].replace('T', ' ')
+        except AttributeError:
+            formatted_date = created_at[:19] if len(created_at) >= 19 else created_at
+    
+    message_text = (
+        f"📋 <b>ЗАЯВКА НА ВЫВОД #{withdrawal_id}</b>\n\n"
+        f"👤 <b>Пользователь:</b>\n"
+        f"• Имя: {withdrawal.get('user_name', 'Неизвестно')}\n"
+        f"• Username: @{withdrawal.get('user_username', 'нет')}\n"
+        f"• ID: {withdrawal.get('user_id', 'N/A')}\n\n"
+        
+        f"💰 <b>Финансы:</b>\n"
+        f"• Сумма: {withdrawal.get('amount', 0)} руб.\n"
+        f"• К получению: {withdrawal.get('amount_after_fee', 0)} руб.\n"
+        f"• Комиссия: {withdrawal.get('fee', 0)} руб. ({withdrawal.get('fee_percent', 0)}%)\n\n"
+        
+        f"💳 <b>Способ вывода:</b>\n"
+        f"{withdrawal.get('method', 'Неизвестно')}\n"
+        f"<code>{withdrawal.get('details', 'Не указаны')}</code>\n\n"
+        
+        f"📅 <b>Дата создания:</b>\n"
+        f"{formatted_date}\n\n"
+        
+        f"📊 <b>Статус:</b> {withdrawal.get('status', 'Неизвестно')}"
+    )
+    
+    # Кнопки действий
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Одобрить", callback_data=f"admin_withdraw_approve_{withdrawal_id}"),
+                InlineKeyboardButton(text="❌ Отклонить", callback_data=f"admin_withdraw_reject_{withdrawal_id}")
+            ],
+            [
+                InlineKeyboardButton(text="✅ Завершить", callback_data=f"admin_withdraw_complete_{withdrawal_id}"),
+                InlineKeyboardButton(text="📋 Назад к списку", callback_data="admin_withdrawals_list")
+            ]
+        ]
+    )
+    
+    # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: проверяем callback.message перед edit_text
+    if hasattr(callback, 'message') and callback.message is not None:
+        try:
+            await callback.message.edit_text(message_text, reply_markup=keyboard)
+        except Exception as e:
+            logger.error(f"Ошибка редактирования сообщения: {e}")
+            try:
+                # Пытаемся отправить новое сообщение вместо редактирования
+                await callback.message.answer(message_text, reply_markup=keyboard)
+            except Exception as e2:
+                logger.error(f"Ошибка отправки сообщения: {e2}")
+    else:
+        # Если нет сообщения для редактирования, отправляем новое
+        try:
+            # Пытаемся получить chat_id из callback
+            chat_id = callback.from_user.id if callback.from_user else None
+            if chat_id:
+                await bot.send_message(chat_id, message_text, reply_markup=keyboard)
+        except Exception as e:
+            logger.error(f"Не удалось отправить сообщение: {e}")
+    
+    # Безопасно пытаемся ответить на callback
+    try:
+        await callback.answer()
+    except:
+        pass  # Игнорируем если не получается
+
+@dp.callback_query(F.data == "withdraw_cancel")
+async def withdraw_cancel_handler(callback: CallbackQuery, state: FSMContext):
+    """Обработка отмены вывода из любого состояния"""
+    if not callback or not callback.message:
+        return
+    
+    try:
+        await callback.message.edit_text("❌ Вывод отменен")
+    except Exception as e:
+        logger.error(f"Ошибка редактирования сообщения: {e}")
+    
+    await state.clear()
+    await callback.answer()
+@dp.callback_query(F.data.startswith("admin_withdraw_approve_"))
+async def admin_withdrawal_approve_handler(callback: CallbackQuery):
+    """Одобрение заявки на вывод"""
+    # БЕЗОПАСНАЯ ПРОВЕРКА
+    if not callback:
+        return
+    
+    if not hasattr(callback, 'from_user') or not callback.from_user:
+        return
+    
+    if callback.from_user.id != config.ADMIN_ID:
+        await callback.answer("⛔ Нет доступа")
+        return
+    
+    if not hasattr(callback, 'data') or not callback.data:
+        await callback.answer("Ошибка данных")
+        return
+    
+    # БЕЗОПАСНОЕ ИСПОЛЬЗОВАНИЕ replace
+    try:
+        callback_data = str(callback.data) if callback.data else ""
+        withdrawal_id = callback_data.replace("admin_withdraw_approve_", "")
+    except AttributeError:
+        await callback.answer("❌ Ошибка обработки данных")
+        return
+    
+    if not withdrawal_id:
+        await callback.answer("❌ ID заявки не найден")
+        return
+    
+    # Обрабатываем заявку
+    success, message = await utils.process_withdrawal(
+        withdrawal_id=withdrawal_id,
+        admin_id=callback.from_user.id,
+        action='approve'
+    )
+    
+    if success:
+        # Получаем обновленные данные заявки
+        withdrawals = await utils.read_json(config.WITHDRAWALS_FILE)
+        withdrawal = withdrawals.get(withdrawal_id, {}) if isinstance(withdrawals, dict) else {}
+        
+        # Отправляем уведомление пользователю
+        if withdrawal:
+            await ReferralNotifications.send_withdrawal_status_notification(
+                bot=bot,
+                user_id=withdrawal.get('user_id', 0),
+                withdrawal_data=withdrawal,
+                status='processing',
+                comment="Заявка одобрена, ожидайте зачисления"
+            )
+        
+        await callback.answer("✅ Заявка одобрена")
+        
+        # Обновляем сообщение с проверкой callback.message
+        if hasattr(callback, 'message') and callback.message:
+            try:
+                await callback.message.edit_text(
+                    f"✅ <b>ЗАЯВКА ОДОБРЕНА</b>\n\n"
+                    f"🆔 ID: {withdrawal_id}\n"
+                    f"👤 Пользователь уведомлен.\n\n"
+                    f"После отправки средств нажмите 'Завершить'."
+                )
+            except Exception as e:
+                logger.error(f"Ошибка редактирования сообщения: {e}")
+    else:
+        await callback.answer(f"❌ {message}", show_alert=True)
+
+
+@dp.callback_query(F.data.startswith("admin_withdraw_complete_"))
+async def admin_withdrawal_complete_handler(callback: CallbackQuery):
+    """Завершение заявки на вывод"""
+    # БЕЗОПАСНАЯ ПРОВЕРКА
+    if not callback:
+        return
+    
+    if not hasattr(callback, 'from_user') or not callback.from_user:
+        return
+    
+    if callback.from_user.id != config.ADMIN_ID:
+        await callback.answer("⛔ Нет доступа")
+        return
+    
+    if not hasattr(callback, 'data') or not callback.data:
+        await callback.answer("Ошибка данных")
+        return
+    
+    # БЕЗОПАСНОЕ ИСПОЛЬЗОВАНИЕ replace
+    try:
+        callback_data = str(callback.data) if callback.data else ""
+        withdrawal_id = callback_data.replace("admin_withdraw_complete_", "")
+    except AttributeError:
+        await callback.answer("❌ Ошибка обработки данных")
+        return
+    
+    if not withdrawal_id:
+        await callback.answer("❌ ID заявки не найден")
+        return
+    
+    # Обрабатываем заявку
+    success, message = await utils.process_withdrawal(
+        withdrawal_id=withdrawal_id,
+        admin_id=callback.from_user.id,
+        action='complete'
+    )
+    
+    if success:
+        # Получаем обновленные данные заявки
+        withdrawals = await utils.read_json(config.WITHDRAWALS_FILE)
+        withdrawal = withdrawals.get(withdrawal_id, {}) if isinstance(withdrawals, dict) else {}
+        
+        # Отправляем уведомление пользователю
+        if withdrawal:
+            await ReferralNotifications.send_withdrawal_status_notification(
+                bot=bot,
+                user_id=withdrawal.get('user_id', 0),
+                withdrawal_data=withdrawal,
+                status='completed',
+                comment="Средства зачислены"
+            )
+        
+        await callback.answer("✅ Вывод завершен")
+        
+        # Обновляем сообщение с проверкой callback.message
+        if hasattr(callback, 'message') and callback.message:
+            try:
+                await callback.message.edit_text(
+                    f"✅ <b>ВЫВОД ЗАВЕРШЕН</b>\n\n"
+                    f"🆔 ID: {withdrawal_id}\n"
+                    f"💰 Сумма: {withdrawal.get('amount', 0)} руб.\n"
+                    f"👤 Пользователь уведомлен.\n\n"
+                    f"Операция завершена."
+                )
+            except Exception as e:
+                logger.error(f"Ошибка редактирования сообщения: {e}")
+    else:
+        await callback.answer(f"❌ {message}", show_alert=True)
+@dp.callback_query(F.data.startswith("admin_withdraw_reject_"))
+async def admin_withdrawal_reject_handler(callback: CallbackQuery, state: FSMContext):
+    """Отклонение заявки на вывод"""
+    # БЕЗОПАСНАЯ ПРОВЕРКА
+    if not callback:
+        return
+    
+    if not hasattr(callback, 'message') or not callback.message:
+        return
+    
+    if not hasattr(callback, 'from_user') or not callback.from_user:
+        await callback.answer("Ошибка пользователя")
+        return
+    
+    if callback.from_user.id != config.ADMIN_ID:
+        await callback.answer("⛔ Нет доступа")
+        return
+    
+    if not hasattr(callback, 'data') or not callback.data:
+        await callback.answer("Ошибка данных")
+        return
+    
+    # БЕЗОПАСНОЕ ИСПОЛЬЗОВАНИЕ replace
+    try:
+        callback_data = str(callback.data) if callback.data else ""
+        withdrawal_id = callback_data.replace("admin_withdraw_reject_", "")
+    except AttributeError:
+        await callback.answer("❌ Ошибка обработки данных")
+        return
+    
+    if not withdrawal_id:
+        await callback.answer("❌ ID заявки не найден")
+        return
+    
+    # Сохраняем ID заявки в состоянии
+    await state.update_data(withdrawal_id=withdrawal_id)
+    await state.set_state(UserStates.admin_waiting_withdrawal_comment)
+    
+    try:
+        await callback.message.edit_text(
+            f"❌ <b>ОТКЛОНЕНИЕ ЗАЯВКИ</b>\n\n"
+            f"🆔 ID: {withdrawal_id}\n\n"
+            f"📝 <b>Введите причину отклонения:</b>\n"
+            f"<i>Это сообщение увидит пользователь</i>"
+        )
+    except Exception as e:
+        logger.error(f"Ошибка редактирования сообщения: {e}")
+    
+    await callback.answer()
+@dp.message(UserStates.admin_waiting_withdrawal_comment)
+async def admin_withdrawal_reject_comment_handler(message: Message, state: FSMContext):
+    """Обработка комментария при отклонении заявки"""
+    if not message or not message.from_user or message.from_user.id != config.ADMIN_ID:
+        return
+    
+    comment = message.text.strip() if message.text else ""
+    
+    if not comment:
+        await message.answer("❌ Пожалуйста, введите причину отклонения:")
+        return
+    
+    # Получаем ID заявки из состояния
+    state_data = await state.get_data()
+    withdrawal_id = state_data.get('withdrawal_id')
+    
+    if not withdrawal_id:
+        await message.answer("❌ Ошибка: ID заявки не найден")
+        await state.clear()
+        return
+    
+    # Обрабатываем отклонение
+    success, result_message = await utils.process_withdrawal(
+        withdrawal_id=withdrawal_id,
+        admin_id=message.from_user.id,
+        action='reject',
+        comment=comment
+    )
+    
+    if success:
+        # Получаем обновленные данные заявки
+        withdrawals = await utils.read_json(config.WITHDRAWALS_FILE)
+        withdrawal = withdrawals.get(withdrawal_id, {}) if withdrawals else {}
+        
+        # Отправляем уведомление пользователю
+        if withdrawal:
+            await ReferralNotifications.send_withdrawal_status_notification(
+                bot=bot,
+                user_id=withdrawal.get('user_id', 0),
+                withdrawal_data=withdrawal,
+                status='rejected',
+                comment=comment
+            )
+        
+        await message.answer(
+            f"✅ <b>ЗАЯВКА ОТКЛОНЕНА</b>\n\n"
+            f"🆔 ID: {withdrawal_id}\n"
+            f"📝 Причина: {comment}\n"
+            f"👤 Пользователь уведомлен."
+        )
+    else:
+        await message.answer(f"❌ Ошибка: {result_message}")
+    
+    await state.clear()
+
+@dp.callback_query(F.data == "admin_withdrawals_all")
+async def admin_withdrawals_all_handler(callback: CallbackQuery):
+    """Показывает все заявки на вывод"""
+    if not callback or not callback.message:
+        return
+    
+    if not callback.from_user or callback.from_user.id != config.ADMIN_ID:
+        await callback.answer("⛔ Нет доступа")
+        return
+    
+    withdrawals = await utils.read_json(config.WITHDRAWALS_FILE)
+    
+    if not isinstance(withdrawals, dict):
+        await callback.message.edit_text("📋 Нет заявок на вывод")
+        await callback.answer()
+        return
+    
+    # Группируем по статусу
+    status_groups = {}
+    for w in withdrawals.values():
+        if isinstance(w, dict):
+            status = w.get('status', 'unknown')
+            if status not in status_groups:
+                status_groups[status] = []
+            status_groups[status].append(w)
+    
+    message_text = "📋 <b>ВСЕ ЗАЯВКИ НА ВЫВОД</b>\n\n"
+    
+    for status, group in status_groups.items():
+        status_text = {
+            'pending': '⏳ Ожидают',
+            'processing': '🔄 В обработке', 
+            'completed': '✅ Завершены',
+            'rejected': '❌ Отклонены',
+            'cancelled': '🚫 Отменены'
+        }.get(status, status)
+        
+        total_amount = sum(w.get('amount', 0) for w in group)
+        
+        message_text += f"{status_text}: {len(group)} заявок на {total_amount} руб.\n"
+    
+    message_text += f"\n📊 Всего: {len(withdrawals)} заявок"
+    
+    await callback.message.edit_text(message_text)
+    await callback.answer()
+
+@dp.callback_query(F.data == "admin_withdraw_stats")
+async def admin_withdraw_stats_handler(callback: CallbackQuery):
+    """Показывает статистику по выводам"""
+    if not callback or not callback.message:
+        return
+    
+    if not callback.from_user or callback.from_user.id != config.ADMIN_ID:
+        await callback.answer("⛔ Нет доступа")
+        return
+    
+    withdrawals = await utils.read_json(config.WITHDRAWALS_FILE)
+    
+    if not isinstance(withdrawals, dict):
+        await callback.message.edit_text("📊 Нет данных для статистики")
+        await callback.answer()
+        return
+    
+    # Статистика по дням
+    today = datetime.now().strftime('%Y-%m-%d')
+    week_ago = (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')
+    
+    today_withdrawals = []
+    week_withdrawals = []
+    
+    for w in withdrawals.values():
+        if isinstance(w, dict):
+            created_at = w.get('created_at', '')
+            if created_at and created_at.startswith(today):
+                today_withdrawals.append(w)
+            if created_at and created_at >= week_ago:
+                week_withdrawals.append(w)
+    
+    # Считаем суммы
+    total_all = sum(w.get('amount', 0) for w in withdrawals.values() if isinstance(w, dict))
+    total_completed = sum(w.get('amount', 0) for w in withdrawals.values() 
+                         if isinstance(w, dict) and w.get('status') == 'completed')
+    total_pending = sum(w.get('amount', 0) for w in withdrawals.values() 
+                       if isinstance(w, dict) and w.get('status') in ['pending', 'processing'])
+    total_today = sum(w.get('amount', 0) for w in today_withdrawals)
+    total_week = sum(w.get('amount', 0) for w in week_withdrawals)
+    
+    message_text = (
+        f"📊 <b>СТАТИСТИКА ВЫВОДОВ</b>\n\n"
+        f"📈 <b>Общая:</b>\n"
+        f"• Всего заявок: {len(withdrawals)}\n"
+        f"• Общая сумма: {total_all} руб.\n"
+        f"• Выведено: {total_completed} руб.\n"
+        f"• В обработке: {total_pending} руб.\n\n"
+        
+        f"📅 <b>За период:</b>\n"
+        f"• Сегодня: {len(today_withdrawals)} заявок на {total_today} руб.\n"
+        f"• За неделю: {len(week_withdrawals)} заявок на {total_week} руб.\n\n"
+        
+        f"📋 <b>По статусам:</b>\n"
+    )
+    
+    # Статистика по статусам
+    status_counts = {}
+    for w in withdrawals.values():
+        if isinstance(w, dict):
+            status = w.get('status', 'unknown')
+            status_counts[status] = status_counts.get(status, 0) + 1
+    
+    for status, count in status_counts.items():
+        status_name = {
+            'pending': '⏳ Ожидают',
+            'processing': '🔄 В обработке',
+            'completed': '✅ Завершены',
+            'rejected': '❌ Отклонены',
+            'cancelled': '🚫 Отменены'
+        }.get(status, status)
+        
+        message_text += f"• {status_name}: {count} заявок\n"
+    
+    await callback.message.edit_text(message_text)
+    await callback.answer()
+
+@dp.callback_query(F.data == "admin_withdrawals_list")
+async def admin_withdrawals_list_handler(callback: CallbackQuery):
+    """Возврат к списку заявок"""
+    if not callback or not callback.from_user or callback.from_user.id != config.ADMIN_ID:
+        await callback.answer("⛔ Нет доступа")
+        return
+    
+    # Просто вызываем функцию админской панели
+    await admin_withdrawals_panel(callback.message)
+    await callback.answer()
+
+# ========== ДОБАВЛЯЕМ ОБРАБОТЧИК ДЛЯ КНОПКИ НАЗАД ==========
+
+@dp.callback_query(F.data == "admin_back")
+async def admin_back_handler(callback: CallbackQuery):
+    """Возврат в главное меню админки"""
+    if not callback or not callback.message:
+        return
+    
+    user = callback.from_user
+    if not user or user.id != config.ADMIN_ID:
+        await callback.answer("⛔ Нет доступа")
+        return
+    
+    # Используем answer вместо edit_text для ReplyKeyboardMarkup
+    await callback.message.answer(
+        "⚙️ <b>Админ-панель</b>\n\n"
+        "Выберите раздел для управления:",
+        reply_markup=admin_keyboard
+    )
+    await callback.answer()
 # Добавить в bot.py после существующих обработчиков:
 @dp.message(F.text == "🔙 Назад")
 async def back_to_main_from_task(message: Message):
@@ -2239,27 +3646,6 @@ async def admin_add_task(message: Message):
         "<code>ЗАДАНИЕ|1|spartan|Сделайте 20 отжиманий</code>\n"
         "<code>ЗАДАНИЕ|1|amazon|Сделайте 15 приседаний</code>"
     )
-
-# Обработчики для инлайн кнопок админки
-@dp.callback_query(F.data == "admin_back")
-async def admin_back_handler(callback: CallbackQuery):
-    """Возврат в главное меню админки"""
-    user = callback.from_user
-    if not user or user.id != config.ADMIN_ID:
-        await callback.answer("⛔ Нет доступа")
-        return
-        
-    if not callback.message:
-        await callback.answer("Ошибка")
-        return
-        
-    # Используем answer вместо edit_text для ReplyKeyboardMarkup
-    await callback.message.answer(
-        "⚙️ <b>Админ-панель</b>\n\n"
-        "Выберите раздел для управления:",
-        reply_markup=admin_keyboard
-    )
-    await callback.answer()
 
 @dp.callback_query(F.data == "admin_stats_general")
 async def admin_stats_general(callback: CallbackQuery):
@@ -2792,7 +4178,7 @@ async def get_referral_link_with_text(user_id):
 
 @dp.callback_query(F.data == "my_earnings")
 async def my_earnings_handler(callback: CallbackQuery):
-    """Показывает начисления по реферальной программе"""
+    """Показывает начисления по реферальной программе с кнопкой вывода"""
     user = callback.from_user
     if not user:
         await callback.answer("Ошибка: пользователь не найден")
@@ -2811,6 +4197,9 @@ async def my_earnings_handler(callback: CallbackQuery):
     
     referrals = user_data.get('referrals', [])
     earnings = user_data.get('referral_earnings', 0)
+    reserved = user_data.get('reserved_for_withdrawal', 0)
+    available_balance = earnings - reserved
+    
     ref_level_id, ref_level = await utils.get_referral_level(len(referrals))
     
     # Получаем информацию о платежах рефералов
@@ -2833,47 +4222,116 @@ async def my_earnings_handler(callback: CallbackQuery):
         referral_link = "Недоступно"
     
     message_text = (
-        f"💰 <b>Мои начисления</b>\n\n"
+        f"💰 <b>МОИ НАЧИСЛЕНИЯ</b>\n\n"
+        f"💎 <b>Балансы:</b>\n"
+        f"• Общий баланс: {earnings} руб.\n"
+        f"• Доступно для вывода: {available_balance} руб.\n"
+        f"• В обработке: {reserved} руб.\n"
+        f"• Минимум для вывода: {config.MIN_WITHDRAWAL} руб.\n"
+        f"• ✅ Без комиссии\n\n"  # Добавляем
+        
+        f"👥 <b>Рефералы:</b>\n"
         f"• Приглашено друзей: {len(referrals)} чел.\n"
         f"• Из них оплатили: {paying_refs} чел.\n"
-        f"• Активных: {active_refs} чел.\n"
-        f"• Заработано: {earnings} руб.\n"
+        f"• Активных: {active_refs} чел.\n\n"
+        
+        f"📊 <b>Уровень:</b>\n"
         f"• Текущий уровень: {ref_level['name']}\n"
         f"• Ваш процент: {ref_level['percent']}%\n\n"
     )
     
-    if len(referrals) == 0:
-        message_text += (
-            f"🎯 <b>Пригласи первого друга и стань Легионером!</b>\n"
-            f"С первого же реферала ты будешь получать 30% от его платежей!\n\n"
-        )
+    # Кнопки (только нужные)
+    keyboard_buttons = []
+    
+    if available_balance >= config.MIN_WITHDRAWAL:
+        keyboard_buttons.append([InlineKeyboardButton(
+            text="💸 Вывести средства", 
+            callback_data="withdrawal_start"
+        )])
     else:
-        message_text += "<b>Последние приглашенные:</b>\n"
-        for i, ref_id in enumerate(referrals[:5], 1):
-            ref_data = await utils.get_user(ref_id)
-            if ref_data:
-                name = ref_data.get('first_name', 'Пользователь')
-                status = "💎" if await utils.is_subscription_active(ref_data) else "🆓" if await utils.is_in_trial_period(ref_data) else "❌"
-                message_text += f"{i}. {status} {name}\n"
+        keyboard_buttons.append([InlineKeyboardButton(
+            text=f"💸 Вывод (нужно ещё {config.MIN_WITHDRAWAL - available_balance} руб.)", 
+            callback_data="show_min_withdrawal"
+        )])
     
-    if len(referrals) > 5:
-        message_text += f"\n... и еще {len(referrals) - 5} пользователей"
+    keyboard_buttons.append([
+        InlineKeyboardButton(text="📤 Пригласить друга", switch_inline_query="invite"),
+        InlineKeyboardButton(text="📋 История выводов", callback_data="withdrawal_history")
+    ])
     
-    # Добавляем реферальную ссылку
-    if referral_link:
-        message_text += f"\n\n🔗 <b>Ваша реферальная ссылка:</b>\n<code>{referral_link}</code>"
+    keyboard_buttons.append([
+        InlineKeyboardButton(text="🔙 Назад к легиону", callback_data="show_referral")
+    ])
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
     
     try:
         await callback.message.edit_text(
             message_text,
-            reply_markup=get_my_referral_keyboard()
+            reply_markup=keyboard
         )
     except Exception as e:
         logger.error(f"Ошибка при редактировании сообщения: {e}")
         await callback.answer("Не удалось обновить сообщение")
     
     await callback.answer()
-
+@dp.callback_query(F.data == "withdrawal_start")
+async def withdrawal_start_from_referral(callback: CallbackQuery, state: FSMContext):
+    """Начало вывода средств из раздела реферальной программы"""
+    if not callback or not callback.message:
+        return
+        
+    user = callback.from_user
+    if not user:
+        await callback.answer("Ошибка")
+        return
+        
+    user_id = user.id
+    user_data = await utils.get_user(user_id)
+    
+    if not user_data:
+        await callback.answer("Сначала зарегистрируйся через /start")
+        return
+    
+    # Получаем балансы
+    total_balance = user_data.get('referral_earnings', 0)
+    reserved = user_data.get('reserved_for_withdrawal', 0)
+    available_balance = total_balance - reserved
+    
+    if available_balance < config.MIN_WITHDRAWAL:
+        await callback.answer(
+            f"💰 <b>Доступно для вывода:</b> {available_balance} руб.\n\n"
+            f"❌ <b>Минимальная сумма вывода:</b> {config.MIN_WITHDRAWAL} руб.\n\n"
+            f"Приглашайте больше друзей, чтобы увеличить баланс! 🤝",
+            show_alert=True
+        )
+        return
+    
+    # Показываем информацию о выводе
+    info_text = (
+        f"💰 <b>ВЫВОД СРЕДСТВ</b>\n\n"
+        f"• Доступный баланс: <b>{available_balance} руб.</b>\n"
+        f"• Минимальная сумма: {config.MIN_WITHDRAWAL} руб.\n"
+        f"• Комиссия: {config.WITHDRAWAL_FEE}%\n"
+        f"• Срок обработки: 1-3 рабочих дня\n\n"
+        f"📝 <b>Введите сумму для вывода:</b>"
+    )
+    
+    try:
+        await callback.message.edit_text(info_text)
+    except Exception as e:
+        logger.error(f"Ошибка редактирования сообщения: {e}")
+        try:
+            await callback.message.answer(info_text)
+        except Exception as e2:
+            logger.error(f"Ошибка отправки сообщения: {e2}")
+            return
+    
+    # Устанавливаем состояние для ввода суммы
+    # state уже передается как параметр, используем его
+    await state.set_state(UserStates.waiting_for_withdrawal_amount)
+    await state.update_data(user_id=user_id, available_balance=available_balance)
+    await callback.answer()
 @dp.callback_query(F.data == "full_referral_system")
 async def full_referral_system_handler(callback: CallbackQuery):
     """Показывает полную реферальную систему"""

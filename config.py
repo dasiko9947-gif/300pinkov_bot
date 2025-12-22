@@ -45,9 +45,26 @@ RUSSIAN_TIMEZONES = {
 # Реферальная система
 REFERRAL_LEVELS = {
     "legioner": {"min_refs": 1, "percent": 30, "name": "Легионер"},
-    "centurion": {"min_refs": 30, "percent": 40, "name": "Центурион"},
+    "centurion": {"min_refs": 30, "percent": 40, "name": "Центурион"}, 
     "imperator": {"min_refs": 300, "percent": 50, "name": "Император"}
 }
+
+# Настройки вывода средств
+MIN_WITHDRAWAL = 300  # Минимальная сумма вывода
+WITHDRAWAL_METHODS = {
+    "bank_card": "💳 Банковская карта",
+    "yoomoney": "ЮMoney",
+    "sberbank": "Сбербанк Онлайн", 
+    "tinkoff": "Тинькофф",
+}
+
+# Файлы данных
+WITHDRAWALS_FILE = BASE_DIR / 'withdrawals_data.json'
+TRANSACTIONS_FILE = BASE_DIR / 'transactions_data.json'
+
+# Лимиты
+DAILY_WITHDRAWAL_LIMIT = 50000  # Максимальный вывод в день
+MAX_WITHDRAWALS_PER_DAY = 3     # Максимум заявок в день
 
 # Новая система рангов (основана на выполненных заданиях)
 RANKS = {
