@@ -1,4 +1,5 @@
-name: Deploy Telegram Bot
+# .github/workflows/deploy.yml
+name: Разверните Telegram-бота
 
 on:
   push:
@@ -8,114 +9,67 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: 🚚 Checkout code
+      - name: 🚚 Код для оформления заказа
         uses: actions/checkout@v4
 
-      - name: 🔑 Setup SSH key
+      - name: 🔑 Настройка SSH-ключа
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.SERVER_SSH_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan ${{ secrets.SERVER_HOST }} >> ~/.ssh/known_hosts
 
-      - name: 🚀 Deploy to server
+      - name: 🚀 Развертывание на сервере
         run: |
           ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no \
             ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} << 'EOF'
-            # 1. Переходим в папку бота и обновляем код
+            # 1. Создаём папку для бота и переходим туда
+            echo "🔄 Создаём директорию и заходим в неё..."
             mkdir -p /home/botuser/telegram-bot
             cd /home/botuser/telegram-bot
-            
-            echo "🔄 Забираем код из GitHub..."
+
+            # 2. Получаем код с GitHub
+            echo "📥 Забираем последние изменения из репозитория..."
+            # Инициализируем git, если нужно, и настраиваем удаленный репозиторий
             git init -q
             git remote remove origin 2>/dev/null || true
             git remote add origin https://github.com/dasiko9947-gif/300pinkov_bot.git
             git fetch --depth=1 origin main -q
             git reset --hard origin/main -q
 
-            # 2. Устанавливаем venv если нужно
-            echo "🐍 Настраиваем виртуальное окружение..."
-            # Обновляем список пакетов перед установкой
+            # 3. Устанавливаем venv, если его нет
+            echo "🐍 Устанавливаем Python виртуальное окружение..."
             sudo apt update -q
-            # Проверяем, установлены ли уже python3-venv и python3-pip
-            if ! command -v python3-venv &> /dev/null || ! dpkg -l | grep -q python3-venv; then
-              sudo apt install -y python3-venv
-            fi
-            if ! command -v pip3 &> /dev/null || ! dpkg -l | grep -q python3-pip; then
-              sudo apt install -y python3-pip
-            fi
+            sudo apt install -y python3-venv python3-pip -q
 
-            # 3. Создаем/пересоздаем venv
-            echo "🔧 Создаем виртуальное окружение..."
+            # 4. Создаем/пересоздаем venv и устанавливаем зависимости
+            echo "🔧 Создаём виртуальное окружение и устанавливаем пакеты..."
             rm -rf venv
             python3 -m venv venv
             source venv/bin/activate
-
-            # Проверяем наличие requirements.txt и устанавливаем зависимости
+            pip install --upgrade pip -q
             if [ -f requirements.txt ]; then
-                echo "📦 Устанавливаем зависимости из requirements.txt..."
-                pip install --upgrade pip -q
                 pip install -r requirements.txt -q
                 echo "✅ Зависимости установлены."
             else
-                echo "⚠️ Файл requirements.txt не найден в репозитории."
+                echo "⚠️ Файл requirements.txt не найден."
             fi
 
-            # 4. Создаем .env файл ПРАВИЛЬНО (это самое важное!)
-            echo "🔐 Создаем .env файл..."
-            cat > /home/botuser/telegram-bot/.env << EOL
-# Telegram
+            # 5. Обновляем .env файл
+            echo "🔐 Создаём/обновляем .env файл..."
+            cat > .env << EOL
 TELEGRAM_TOKEN=${{ secrets.TELEGRAM_TOKEN }}
-ADMIN_ID=${{ secrets.ADMIN_ID }}
-
-# YooKassa
-YOOKASSA_SHOP_ID=${{ secrets.YOOKASSA_SHOP_ID }}
-YOOKASSA_SECRET_KEY=${{ secrets.YOOKASSA_SECRET_KEY }}
-
-# Bank card
-BANK_CARD=${{ secrets.BANK_CARD }}
-
-# Support
-SUPPORT_USERNAME=${{ secrets.SUPPORT_USERNAME }}
 EOL
+            echo "✅ .env файл обновлён."
 
-            # 5. Проверяем что файл создан
-            echo "✅ .env файл создан. Проверка:"
-            ls -la /home/botuser/telegram-bot/.env
-            # Выводим содержимое с замаскированными значениями
-            echo "Содержимое .env (значения скрыты):"
-            sed 's/=.*/=[скрыто]/' /home/botuser/telegram-bot/.env
-
-            # 6. Обновляем systemd сервис
-            echo "⚙️ Обновляем systemd сервис..."
-            sudo tee /etc/systemd/system/telegram-bot.service > /dev/null << 'SERVICE'
-[Unit]
-Description=Telegram Bot 300 ПИНКОВ
-After=network.target
-
-[Service]
-Type=simple
-User=botuser
-WorkingDirectory=/home/botuser/telegram-bot
-Environment="PATH=/home/botuser/telegram-bot/venv/bin"
-ExecStart=/home/botuser/telegram-bot/venv/bin/python /home/botuser/telegram-bot/bot.py
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-SERVICE
-
-            # 7. Перезапускаем бота
-            echo "🔄 Перезапускаем бота..."
-            sudo systemctl daemon-reload
+            # 6. Перезапускаем systemd-сервис
+            echo "🔄 Перезапускаем Telegram-бота..."
             sudo systemctl restart telegram-bot
-            sudo systemctl enable telegram-bot
 
-            # 8. Проверяем статус
+            # 7. Проверяем статус
             sleep 3
-            echo "📊 Статус бота:"
-            sudo systemctl status telegram-bot --no-pager -l | head -15
-            
-            echo "[✅] Бот успешно развернут в $(date)"
+            echo "📊 Статус сервиса:"
+            sudo systemctl status telegram-bot --no-pager -l | head -10
+
+            echo "[✅] Бот развернут и перезапущен в $(date)"
           EOF
