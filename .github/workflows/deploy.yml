@@ -33,17 +33,33 @@ jobs:
             git fetch --depth=1 origin main -q
             git reset --hard origin/main -q
 
-            # 2. Устанавливаем venv
+            # 2. Устанавливаем venv если нужно
             echo "🐍 Настраиваем виртуальное окружение..."
+            # Обновляем список пакетов перед установкой
             sudo apt update -q
-            sudo apt install -y python3-venv python3-pip
-            
+            # Проверяем, установлены ли уже python3-venv и python3-pip
+            if ! command -v python3-venv &> /dev/null || ! dpkg -l | grep -q python3-venv; then
+              sudo apt install -y python3-venv
+            fi
+            if ! command -v pip3 &> /dev/null || ! dpkg -l | grep -q python3-pip; then
+              sudo apt install -y python3-pip
+            fi
+
             # 3. Создаем/пересоздаем venv
+            echo "🔧 Создаем виртуальное окружение..."
             rm -rf venv
             python3 -m venv venv
             source venv/bin/activate
-            pip install --upgrade pip -q
-            pip install -r requirements.txt -q
+
+            # Проверяем наличие requirements.txt и устанавливаем зависимости
+            if [ -f requirements.txt ]; then
+                echo "📦 Устанавливаем зависимости из requirements.txt..."
+                pip install --upgrade pip -q
+                pip install -r requirements.txt -q
+                echo "✅ Зависимости установлены."
+            else
+                echo "⚠️ Файл requirements.txt не найден в репозитории."
+            fi
 
             # 4. Создаем .env файл ПРАВИЛЬНО (это самое важное!)
             echo "🔐 Создаем .env файл..."
@@ -66,8 +82,9 @@ EOL
             # 5. Проверяем что файл создан
             echo "✅ .env файл создан. Проверка:"
             ls -la /home/botuser/telegram-bot/.env
-            echo "Первые строки (значения скрыты):"
-            head -10 /home/botuser/telegram-bot/.env | sed 's/=.*/=[скрыто]/'
+            # Выводим содержимое с замаскированными значениями
+            echo "Содержимое .env (значения скрыты):"
+            sed 's/=.*/=[скрыто]/' /home/botuser/telegram-bot/.env
 
             # 6. Обновляем systemd сервис
             echo "⚙️ Обновляем systemd сервис..."
@@ -98,7 +115,7 @@ SERVICE
             # 8. Проверяем статус
             sleep 3
             echo "📊 Статус бота:"
-            sudo systemctl status telegram-bot --no-pager | head -10
+            sudo systemctl status telegram-bot --no-pager -l | head -15
             
             echo "[✅] Бот успешно развернут в $(date)"
           EOF
