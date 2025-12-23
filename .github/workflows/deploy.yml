@@ -22,36 +22,65 @@ jobs:
         run: |
           ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no \
             ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} << 'EOF'
-            # Создаём папку для бота
+            # 1. Переходим в папку бота и обновляем код
             mkdir -p ~/telegram-bot
             cd ~/telegram-bot
-
-            python3 -m venv venv
-            source venv/bin/activate
-            pip install --upgrade pip
-            pip install -r requirements.txt
-    
-            # Перезапускаем бота
-            sudo systemctl restart telegram-bot
-            EOF
-
-            # Получаем код с GitHub
-            git init .
+            
+            echo "🔄 Забираем код из GitHub..."
+            git init
+            git remote remove origin 2>/dev/null || true
             git remote add origin https://github.com/dasiko9947-gif/300pinkov_bot.git
             git fetch --depth=1 origin main
             git reset --hard origin/main
 
-            # Устанавливаем venv, если нет
-            sudo apt update && sudo apt install -y python3-venv
+            # 2. Устанавливаем venv, если его нет (Ubuntu 24.04+)
+            echo "🐍 Настраиваем виртуальное окружение..."
+            sudo apt update -q
+            sudo apt install -y python3-venv python3-pip[citation:1]
+            
+            # 3. Создаем/пересоздаем venv и устанавливаем зависимости
+            rm -rf venv
             python3 -m venv venv
             source venv/bin/activate
             pip install --upgrade pip
             pip install -r requirements.txt
 
-            # Обновляем .env
-            echo "TELEGRAM_TOKEN=${{ secrets.TELEGRAM_TOKEN }}" > .env
+            # 4. Создаем .env файл со ВСЕМИ переменными
+            echo "🔐 Настраиваем .env файл..."
+            cat > .env << 'ENVFILE'
+            TELEGRAM_TOKEN=${{ secrets.TELEGRAM_TOKEN }}
+            ADMIN_ID=${{ secrets.ADMIN_ID }}
+            YOOKASSA_SHOP_ID=${{ secrets.YOOKASSA_SHOP_ID }}
+            YOOKASSA_SECRET_KEY=${{ secrets.YOOKASSA_SECRET_KEY }}
+            BANK_CARD=${{ secrets.BANK_CARD }}
+            SUPPORT_USERNAME=${{ secrets.SUPPORT_USERNAME }}
+            ENVFILE
 
-            # Перезапускаем systemd-сервис
+            # 5. Обновляем конфигурацию systemd сервиса (исправлен ExecStart)
+            echo "⚙️ Обновляем systemd сервис..."
+            sudo tee /etc/systemd/system/telegram-bot.service > /dev/null << 'SERVICEUNIT'
+            [Unit]
+            Description=Telegram Bot 300 ПИНКОВ
+            After=network.target
+
+            [Service]
+            Type=simple
+            User=botuser
+            WorkingDirectory=/home/botuser/telegram-bot
+            Environment="PATH=/home/botuser/telegram-bot/venv/bin"
+            ExecStart=/home/botuser/telegram-bot/venv/bin/python /home/botuser/telegram-bot/bot.py[citation:2][citation:8]
+            Restart=always
+            RestartSec=10
+
+            [Install]
+            WantedBy=multi-user.target
+            SERVICEUNIT
+
+            # 6. Перезагружаем systemd и запускаем бота
+            echo "🔄 Перезапускаем бота..."
+            sudo systemctl daemon-reload[citation:5]
             sudo systemctl restart telegram-bot
-            echo "[✅] Bot deployed and restarted at $(date)"
-          EOF
+            sudo systemctl enable telegram-bot[citation:2][citation:5]
+
+            echo "[✅] Бот развернут и перезапущен в $(date)"
+            EOF
