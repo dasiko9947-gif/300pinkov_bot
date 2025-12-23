@@ -26,6 +26,15 @@ jobs:
             mkdir -p ~/telegram-bot
             cd ~/telegram-bot
 
+            python3 -m venv venv
+            source venv/bin/activate
+            pip install --upgrade pip
+            pip install -r requirements.txt
+    
+            # Перезапускаем бота
+            sudo systemctl restart telegram-bot
+            EOF
+
             # Получаем код с GitHub
             git init .
             git remote add origin https://github.com/dasiko9947-gif/300pinkov_bot.git
