@@ -6098,6 +6098,7 @@ async def copy_current_pink_link(callback: CallbackQuery):
         logger.error(f"Ошибка при копировании пинка: {e}")
         await callback.answer("❌ Ошибка при копировании")
 
+
 @dp.inline_query()
 async def inline_query_handler(inline_query: InlineQuery):
     """Упрощенный обработчик inline запросов"""
@@ -6339,4 +6340,5 @@ async def main():
     
     await dp.start_polling(bot)
 if __name__ == "__main__":
+
     asyncio.run(main())
