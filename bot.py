@@ -6300,7 +6300,48 @@ async def check_scheduler_command(message: Message):
         
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
+import os
+import time
+import threading
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
 
+class TasksFileHandler(FileSystemEventHandler):
+    """Обработчик изменений файла заданий"""
+    
+    def on_modified(self, event):
+        if event.src_path.endswith('tasks.json'):
+            logger.info("📂 Файл tasks.json изменен, перезагружаем задания...")
+            
+            # Очищаем кэш заданий в utils
+            if hasattr(utils, 'task_cache'):
+                utils.task_cache = {}
+                logger.info("✅ Кэш заданий очищен")
+            
+            # Перезагружаем модуль utils
+            import importlib
+            importlib.reload(utils)
+            logger.info("✅ Модуль utils перезагружен")
+            
+            # Можно также перезагрузить config если нужно
+            importlib.reload(config)
+            logger.info("✅ Все задания перезагружены")
+
+def start_file_watcher():
+    """Запускает наблюдение за файлами"""
+    try:
+        event_handler = TasksFileHandler()
+        observer = Observer()
+        observer.schedule(event_handler, path='.', recursive=False)
+        observer.start()
+        logger.info("👁️ Наблюдение за файлами запущено")
+        return observer
+    except Exception as e:
+        logger.error(f"❌ Ошибка запуска watcher: {e}")
+        return None
+
+# Запускаем watcher в отдельном потоке
+file_watcher = start_file_watcher()
 async def main():
     logger.info("Бот запускается...")
     
