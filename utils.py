@@ -19,13 +19,22 @@ async def get_current_postponed_count(user_data):
 async def add_referral(referrer_id, referred_id):
     """Добавляет реферала к рефереру (старая функция для совместимости)"""
     try:
+        # referrer_id = тот, кто пригласил
+        # referred_id = тот, кого пригласили
         referrer_data = await get_user(referrer_id)
         if referrer_data:
             referrals = referrer_data.get('referrals', [])
+            
+            # Преобразуем в список если нужно
+            if not isinstance(referrals, list):
+                referrals = []
+            
+            # Добавляем если еще нет
             if referred_id not in referrals:
                 referrals.append(referred_id)
                 referrer_data['referrals'] = referrals
                 await save_user(referrer_id, referrer_data)
+                logger.info(f"✅ Добавлен реферал {referred_id} к {referrer_id}")
                 return True
         return False
     except Exception as e:
@@ -549,36 +558,39 @@ async def get_rank_display_info(rank_id, user_data=None):
 # ========== РЕФЕРАЛЬНАЯ СИСТЕМА ==========
 
 async def save_referral_relationship(referred_id, referrer_id):
-    """Сохраняет связь реферал-реферер"""
+    """Сохраняет связь реферал-реферер - ИСПРАВЛЕННЫЙ ВАРИАНТ"""
     try:
-        # Получаем данные реферала
+        # 1. Сначала получаем данные РЕФЕРАЛА (того, кто регистрируется)
         referred_data = await get_user(referred_id)
         if not referred_data:
             logger.error(f"❌ Реферал {referred_id} не найден")
             return False
         
-        # Сохраняем кто пригласил
+        # 2. Сохраняем кто пригласил в данные РЕФЕРАЛА
         referred_data['invited_by'] = referrer_id
         await save_user(referred_id, referred_data)
         
-        # Добавляем в список рефералов реферера
+        # 3. Теперь добавляем РЕФЕРАЛА в список рефералов РЕФЕРЕРА
         referrer_data = await get_user(referrer_id)
         if referrer_data:
             referrals = referrer_data.get('referrals', [])
+            
+            # Проверяем, что это число, а не строка
+            if not isinstance(referrals, list):
+                referrals = []
+            
+            # Проверяем, нет ли уже этого реферала
             if referred_id not in referrals:
                 referrals.append(referred_id)
                 referrer_data['referrals'] = referrals
                 await save_user(referrer_id, referrer_data)
                 
                 # Логируем действие
-                await log_transaction(
-                    user_id=referrer_id,
-                    transaction_type="referral_add",
-                    amount=0,
-                    description=f"Добавлен реферал {referred_id}"
-                )
-                
                 logger.info(f"✅ Реферал {referred_id} добавлен к {referrer_id}")
+                logger.info(f"📊 Теперь у {referrer_id} рефералов: {len(referrals)}")
+                return True
+            else:
+                logger.info(f"ℹ️ Реферал {referred_id} уже есть у {referrer_id}")
                 return True
                 
     except Exception as e:

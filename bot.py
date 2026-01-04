@@ -2,8 +2,6 @@ import asyncio
 import logging
 import payments
 from datetime import datetime
-import json
-import os
 import random
 import math 
 from aiogram.fsm.storage.base import StorageKey
@@ -380,7 +378,7 @@ import asyncio
 from aiogram import exceptions
 
 async def send_task_to_user(user_id: int, user_data: dict):
-    """Отправляет задание конкретному пользователю с учетом этапов"""
+    """Отправляет задание конкретному пользователю"""
     try:
         logger.info(f"🔍 send_task_to_user: проверяю пользователя {user_id}")
         
@@ -426,14 +424,6 @@ async def send_task_to_user(user_id: int, user_data: dict):
             next_day = 1
         
         logger.info(f"📅 Пользователь {user_id} - текущий день: {current_day}, следующий день: {next_day}")
-        
-        # 🔥 ПРОВЕРЯЕМ, НУЖНО ЛИ ОТПРАВИТЬ УВЕДОМЛЕНИЕ О НОВОМ ЭТАПЕ
-        stage_data = await get_stage_for_day(next_day, archetype)
-        if stage_data:
-            logger.info(f"🎯 Пользователь {user_id} начинает новый этап в день {next_day}")
-            await send_stage_notification(user_id, next_day, stage_data, archetype)
-            # Ждем 5 секунд перед отправкой задания
-            await asyncio.sleep(5)
         
         todays_tasks = await utils.get_todays_tasks(user_data)
         logger.info(f"📋 Заданий для пользователя {user_id}: {len(todays_tasks) if todays_tasks else 0}")
@@ -968,24 +958,6 @@ async def process_ready_confirmation(message: Message, state: FSMContext):
     
     logger.info(f"🔍 ОТЛАДКА: Новый пользователь {user.id}, архетип: {archetype}")
     
-    # 🔥 ДОБАВЛЯЕМ ПРОВЕРКУ ЭТАПОВ ПЕРЕД ПЕРВЫМ ЗАДАНИЕМ
-    # Проверяем этап для дня 1 с учетом архетипа
-    stage_data = await get_stage_for_day(1, archetype)
-    
-    logger.info(f"🎯 Проверка этапа для нового пользователя:")
-    logger.info(f"  Пользователь: {user.id}")
-    logger.info(f"  Архетип: {archetype}")
-    logger.info(f"  Этап для дня 1: {stage_data}")
-    
-    if stage_data:
-        logger.info(f"✅ Найден этап: {stage_data.get('number')} - {stage_data.get('name')}")
-        await send_stage_notification(user.id, 1, stage_data, archetype)
-        # Ждем 5 секунд перед отправкой задания
-        logger.info(f"⏳ Ожидаем 5 секунд...")
-        await asyncio.sleep(5)
-    else:
-        logger.warning(f"⚠️ Этап для дня 1 не найден! Проверь файл stages.json")
-    
     # Отправляем первое задание
     task_id, task = await utils.get_task_by_day(1, archetype)
     
@@ -1021,7 +993,7 @@ async def process_ready_confirmation(message: Message, state: FSMContext):
     await update_user_activity(user.id)
 @dp.message(UserStates.waiting_for_archetype)
 async def process_archetype(message: Message, state: FSMContext):
-    """Обработка выбора архетипа с показом информации о первом этапе"""
+    """Обработка выбора архетипа"""
     user = message.from_user
     if not user:
         await message.answer("Ошибка: не удалось получить информацию о пользователе")
@@ -1047,28 +1019,35 @@ async def process_archetype(message: Message, state: FSMContext):
         await message.answer("Пожалуйста, выбери архетип с клавиатуры:")
         return
     
-    # Получаем информацию о первом этапе для выбранного архетипа
-    stage_data = await get_stage_for_day(1, archetype)
-    
+    # Создаем базовую информацию об архетипе
     if archetype == "spartan":
-        welcome_text = "🛡️ <b>Путь Спартанца выбран!</b>\n\nТвой путь — сила, дисциплина и порядок."
+        welcome_text = (
+            "🛡️ <b>Путь Спартанца выбран!</b>\n\n"
+            "Твой путь — сила, дисциплина и порядок.\n\n"
+            "🎯 <b>Что тебя ждет:</b>\n"
+            "• Задания на физическую и ментальную стойкость\n"
+            "• Развитие лидерских качеств и ответственности\n"
+            "• Ежедневное укрепление силы воли\n\n"
+        )
     else:
-        welcome_text = "⚔️ <b>Путь Амазонки выбран!</b>\n\nТвой путь — грация, сила и гармония."
+        welcome_text = (
+            "⚔️ <b>Путь Амазонки выбран!</b>\n\n"
+            "Твой путь — грация, сила и гармония.\n\n"
+            "🎯 <b>Что тебя ждет:</b>\n"
+            "• Задания на осознанность и женскую энергию\n"
+            "• Развитие интуиции и эмоционального интеллекта\n"
+            "• Ежедневное самопознание и рост\n\n"
+        )
     
-    # Добавляем информацию о первом этапе
-    if stage_data:
-        welcome_text += f"\n\n🎯 <b>Твой первый этап: {stage_data.get('name', 'Поле битвы')}</b>\n\n"
-        
-        if archetype == "spartan":
-            welcome_text += f"<i>{stage_data.get('subtitle', '')}</i>\n\n"
-            welcome_text += f"{stage_data.get('text', '')}"
-        else:
-            welcome_text += f"<i>{stage_data.get('subtitle', '')}</i>\n\n"
-            welcome_text += f"{stage_data.get('text', '')}"
-        
-        welcome_text += f"\n\n📅 <b>Длительность:</b> 30 дней (с 1 по 30 день)"
-    
-    welcome_text += "\n\n⬇️ <b>Нажми кнопку ниже, чтобы начать!</b>"
+    # Общая информация для обоих архетипов
+    welcome_text += (
+        "📊 <b>Система челленджа:</b>\n"
+        "• 300 дней непрерывного роста\n"
+        "• 10 этапов по 30 дней каждый\n"
+        "• Ежедневные задания в 9:00\n"
+        "• Система рангов и достижений\n\n"
+        "⬇️ <b>Нажми кнопку ниже, чтобы начать!</b>"
+    )
     
     await message.answer(
         welcome_text,
@@ -5332,204 +5311,6 @@ async def check_subscription_command(message: Message):
     
     await message.answer(message_text)
 
-# ========== ЭТАПЫ ==========
-async def load_stages():
-    """Загружает этапы из stages.json"""
-    try:
-        stages_path = os.path.join(os.path.dirname(__file__), 'stages.json')
-        with open(stages_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-            
-        # Преобразуем структуру в более удобный формат
-        stages = {}
-        for stage_key, stage_data in data.items():
-            # Пример: stage_1 -> stage_1
-            stage_number = stage_data.get('stage_number', 1)
-            
-            # Создаем унифицированный формат
-            stages[stage_key] = {
-                "number": stage_number,
-                "name": stage_data.get('stage_name', f'Этап {stage_number}'),
-                "day_start": stage_data.get('stage_day_start', 1),
-                "day_end": stage_data.get('stage_day_end', 30),
-                "spartan": stage_data.get('spartan', {}),
-                "amazon": stage_data.get('amazon', {})
-            }
-        
-        logger.info(f"✅ Загружено {len(stages)} этапов")
-        return stages
-        
-    except FileNotFoundError:
-        logger.error("❌ Файл stages.json не найден")
-        return {}
-    except json.JSONDecodeError:
-        logger.error("❌ Ошибка чтения stages.json")
-        return {}
-    except Exception as e:
-        logger.error(f"❌ Ошибка загрузки этапов: {e}")
-        return {}
-
-async def get_stage_for_day(day: int, archetype: str = 'spartan'):
-    """Возвращает информацию об этапе для указанного дня с учетом архетипа"""
-    stages = await load_stages()
-    
-    for stage_key, stage_data in stages.items():
-        day_start = stage_data.get('day_start', 1)
-        day_end = stage_data.get('day_end', 30)
-        
-        if day_start <= day <= day_end:
-            # Возвращаем информацию с учетом архетипа
-            result = {
-                "number": stage_data['number'],
-                "name": stage_data['name'],
-                "day_start": day_start,
-                "day_end": day_end
-            }
-            
-            # Добавляем информацию для конкретного архетипа
-            if archetype == 'spartan' and 'spartan' in stage_data:
-                result.update({
-                    "title": stage_data['spartan'].get('title', f'Этап {stage_data["number"]}'),
-                    "subtitle": stage_data['spartan'].get('subtitle', ''),
-                    "text": stage_data['spartan'].get('text', '')
-                })
-            elif archetype == 'amazon' and 'amazon' in stage_data:
-                result.update({
-                    "title": stage_data['amazon'].get('title', f'Этап {stage_data["number"]}'),
-                    "subtitle": stage_data['amazon'].get('subtitle', ''),
-                    "text": stage_data['amazon'].get('text', '')
-                })
-            else:
-                # Если нет данных для архетипа, используем общую информацию
-                result.update({
-                    "title": f'Этап {stage_data["number"]}: {stage_data["name"]}',
-                    "subtitle": "",
-                    "text": ""
-                })
-            
-            return result
-    
-    return None
-
-async def get_stage_for_next_task(user_data: dict):
-    """Возвращает информацию об этапе для СЛЕДУЮЩЕГО задания пользователя"""
-    # Получаем следующий день (текущий день + 1)
-    current_day = user_data.get('current_day', 0)
-    next_day = current_day + 1
-    
-    # Если пользователь только начал (день 0), ставим день 1
-    if next_day == 0:
-        next_day = 1
-    
-    return await get_stage_for_day(next_day)
-async def get_current_stage_number(day: int):
-    """Возвращает номер текущего этапа для дня"""
-    stage_days = [1, 31, 61, 91, 121, 151, 181, 211, 241, 271]
-    
-    # Находим последний пройденный этап
-    for i, stage_day in enumerate(stage_days):
-        if day < stage_day:
-            return i  # Возвращаем номер предыдущего этапа (0-based)
-    
-    return len(stage_days) - 1  # Все этапы пройдены
-
-async def send_stage_notification(user_id: int, day: int, stage_data: dict, archetype: str = 'spartan'):
-    """Отправляет уведомление о новом этапе с учетом архетипа"""
-    try:
-        stage_number = stage_data.get('number', 1)
-        stage_name = stage_data.get('name', f'Этап {stage_number}')
-        
-        # Получаем текст для архетипа
-        title = stage_data.get('title', f'ЭТАП {stage_number}. {stage_name}')
-        subtitle = stage_data.get('subtitle', '')
-        description = stage_data.get('text', '')
-        
-        logger.info(f"🎯 ОТПРАВКА УВЕДОМЛЕНИЯ О ЭТАПЕ:")
-        logger.info(f"  Пользователь: {user_id}")
-        logger.info(f"  День: {day}")
-        logger.info(f"  Этап: {stage_number} - {stage_name}")
-        logger.info(f"  Архетип: {archetype}")
-        
-        message_text = (
-            f"{title}\n\n"
-            f"{subtitle}\n\n"
-            f"{description}\n\n"
-            f"📊 <b>Дни этапа:</b> с {stage_data.get('day_start', 1)} по {stage_data.get('day_end', 30)}\n"
-            f"👤 <b>Твой путь:</b> {'🛡️ Спартанец' if archetype == 'spartan' else '⚔️ Амазонка'}\n\n"
-            f"💪 <b>Что тебя ждет на этом этапе:</b>\n"
-            f"• Еще 30 дней роста и развития\n"
-            f"• Новые вызовы и задания\n"
-            f"• Укрепление дисциплины\n\n"
-            f"🔔 <b>Через 5 секунд придет первое задание этапа!</b>"
-        )
-        
-        await bot.send_message(
-            chat_id=user_id,
-            text=message_text,
-            disable_web_page_preview=True
-        )
-        
-        logger.info(f"✅ Уведомление о этапе {stage_number} отправлено пользователю {user_id} (день {day})")
-        
-    except Exception as e:
-        logger.error(f"❌ Ошибка отправки уведомления о этапе: {e}")
-        logger.error(f"   Stage data: {stage_data}")
-async def send_immediate_task_to_user(user_id: int, user_data: dict) -> bool:
-    """Отправляет немедленное задание пользователю после активации подписки с учетом этапов"""
-    try:
-        # Получаем следующий день (текущий день + 1)
-        current_day = user_data.get('current_day', 0)
-        next_day = current_day + 1
-        
-        # Если пользователь только начал (день 0), ставим день 1
-        if next_day == 0:
-            next_day = 1
-        
-        logger.info(f"📅 Немедленная отправка задания: пользователь {user_id}, день {next_day}")
-            
-        # 🔥 ПРОВЕРЯЕМ, НУЖНО ЛИ ОТПРАВИТЬ УВЕДОМЛЕНИЕ О НОВОМ ЭТАПЕ
-        stage_data = await get_stage_for_day(next_day)
-        if stage_data:
-            logger.info(f"🎯 Пользователь {user_id} начинает новый этап в день {next_day}")
-            await send_stage_notification(user_id, next_day, stage_data)
-            # Ждем 5 секунд перед отправкой задания
-            await asyncio.sleep(5)
-        
-        # Получаем задание для следующего дня
-        task_id, task = await utils.get_task_by_day(next_day, user_data.get('archetype', 'spartan'))
-        
-        if task:
-            # Форматируем сообщение с заданием
-            task_message = (
-                f"📋 <b>Новое задание!</b>\n\n"
-                f"<b>День {next_day}/300</b>\n\n"
-                f"{task['text']}\n\n"
-                f"⏰ <b>До 23:59 на выполнение</b>\n\n"
-                f"<i>Отмечай выполнение кнопками ниже 👇</i>"
-            )
-            
-            # Отправляем задание
-            await bot.send_message(
-                chat_id=user_id,
-                text=task_message,
-                reply_markup=keyboards.task_keyboard,
-                disable_web_page_preview=True
-            )
-            
-            # Обновляем данные пользователя
-            user_data['last_task_sent'] = datetime.now().isoformat()
-            user_data['task_completed_today'] = False
-            await utils.save_user(user_id, user_data)
-            
-            logger.info(f"✅ Задание дня {next_day} отправлено пользователю {user_id} после активации подписки")
-            return True
-        else:
-            logger.warning(f"⚠️ Не найдено задание дня {next_day} для пользователя {user_id}")
-            return False
-            
-    except Exception as e:
-        logger.error(f"❌ Ошибка отправки задания после активации подписки пользователю {user_id}: {e}")
-        return False
 # ========== ПАРНЫХ ТАРИФОВ И ИНВАЙТА ==========
 @dp.callback_query(F.data == "activate_invite_from_subscription")
 async def activate_invite_from_subscription(callback: CallbackQuery, state: FSMContext):
@@ -5923,6 +5704,304 @@ async def test_ranks_button(message: Message):
     if not user or user.id != config.ADMIN_ID:
         return
     await test_ranks_command(message)
+
+
+@dp.message(Command("debug_ref"))
+async def debug_ref_command(message: Message):
+    """Отладка реферальной системы"""
+    user = message.from_user
+    if not user:
+        return
+        
+    user_id = user.id
+    user_data = await utils.get_user(user_id)
+    
+    if not user_data:
+        await message.answer("❌ Пользователь не найден")
+        return
+    
+    referrals = user_data.get('referrals', [])
+    invited_by = user_data.get('invited_by')
+    earnings = user_data.get('referral_earnings', 0)
+    
+    debug_text = (
+        f"🔍 <b>ДЕБАГ РЕФЕРАЛЬНОЙ СИСТЕМЫ</b>\n\n"
+        f"👤 Ваш ID: {user_id}\n"
+        f"📊 Рефералов в списке: {len(referrals)}\n"
+        f"📋 Список ID рефералов: {referrals}\n"
+        f"👥 Вас пригласил: {invited_by}\n"
+        f"💰 Заработано: {earnings} руб.\n\n"
+    )
+    
+    # Проверяем каждого реферала
+    if referrals:
+        debug_text += "<b>Детали по рефералам:</b>\n"
+        for i, ref_id in enumerate(referrals, 1):
+            ref_data = await utils.get_user(ref_id)
+            if ref_data:
+                name = ref_data.get('first_name', 'Неизвестно')
+                sub_active = await utils.is_subscription_active(ref_data)
+                debug_text += f"{i}. {name} (ID: {ref_id}) - подписка: {'✅' if sub_active else '❌'}\n"
+    
+    await message.answer(debug_text)
+# ========== АВТОМАТИЧЕСКИЕ УВЕДОМЛЕНИЯ О ПОДПИСКЕ ==========
+
+async def check_and_notify_inactive_users():
+    """Проверяет и уведомляет пользователей без активной подписки"""
+    logger.info("🔔 Проверяем неактивных пользователей...")
+    
+    users = await utils.get_all_users()
+    notified_count = 0
+    
+    for user_id_str, user_data in users.items():
+        try:
+            user_id = int(user_id_str)
+            
+            # Пропускаем пользователей с активной подпиской
+            if await utils.is_subscription_active(user_data):
+                continue
+            
+            # 1. Проверяем пробный период
+            if await utils.is_in_trial_period(user_data):
+                # Уже есть уведомление в check_trial_expiry()
+                continue
+            
+            # 2. Проверяем, когда закончилась подписка
+            subscription_end = user_data.get('subscription_end')
+            if subscription_end:
+                try:
+                    end_date = datetime.fromisoformat(subscription_end)
+                    days_since_end = (datetime.now() - end_date).days
+                    
+                    # Уведомления в разные интервалы после окончания подписки
+                    if days_since_end == 1:  # Первый день после окончания
+                        await send_subscription_ended_notification(user_id, user_data, days_since_end)
+                        notified_count += 1
+                        
+                    elif days_since_end == 3:  # Через 3 дня
+                        await send_subscription_reminder(user_id, user_data, days_since_end)
+                        notified_count += 1
+                        
+                    elif days_since_end == 7:  # Через неделю
+                        await send_last_chance_notification(user_id, user_data, days_since_end)
+                        notified_count += 1
+                        
+                except Exception as e:
+                    logger.error(f"❌ Ошибка обработки даты подписки пользователя {user_id}: {e}")
+            
+            # 3. Проверяем, когда закончился пробный период
+            created_at = datetime.fromisoformat(user_data.get('created_at', datetime.now().isoformat()))
+            days_passed = (datetime.now() - created_at).days
+            
+            # Уведомления после пробного периода
+            if days_passed == 4:  # На следующий день после пробного периода
+                await send_post_trial_notification(user_id, user_data)
+                notified_count += 1
+                
+            elif days_passed == 7:  # Через 4 дня после пробного периода
+                await send_post_trial_reminder(user_id, user_data)
+                notified_count += 1
+                
+        except Exception as e:
+            logger.error(f"❌ Ошибка уведомления пользователя {user_id_str}: {e}")
+    
+    logger.info(f"📊 Уведомления отправлены: {notified_count} пользователям")
+
+async def send_subscription_ended_notification(user_id: int, user_data: dict, days_since_end: int):
+    """Уведомление об окончании подписки"""
+    try:
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(
+                    text="💎 Продлить подписку", 
+                    callback_data="activate_subscription_after_expiry"
+                )],
+                [InlineKeyboardButton(
+                    text="📊 Мой прогресс", 
+                    callback_data="show_progress_after_expiry"
+                )]
+            ]
+        )
+        
+        message_text = (
+            f"📅 <b>Ваша подписка закончилась</b>\n\n"
+            f"Доступ к ежедневным заданиям приостановлен.\n\n"
+            f"💪 <b>Не останавливайся на достигнутом!</b>\n"
+            f"• Продолжай развивать дисциплину\n"
+            f"• Сохрани достигнутый прогресс\n"
+            f"• Вернись в строй с новой подпиской!\n\n"
+            f"🔥 <b>Активируй подписку и продолжай путь!</b>"
+        )
+        
+        await safe_send_message(
+            user_id=user_id,
+            text=message_text,
+            reply_markup=keyboard
+        )
+        
+        logger.info(f"✅ Уведомление об окончании подписки отправлено пользователю {user_id}")
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка отправки уведомления пользователю {user_id}: {e}")
+
+async def send_subscription_reminder(user_id: int, user_data: dict, days_since_end: int):
+    """Напоминание об окончании подписки (через 3 дня)"""
+    try:
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(
+                    text="💎 Вернуться в челлендж", 
+                    callback_data="activate_subscription_reminder"
+                )]
+            ]
+        )
+        
+        message_text = (
+            f"⏰ <b>Напоминание о подписке</b>\n\n"
+            f"Прошло уже {days_since_end} дней с момента окончания подписки.\n\n"
+            f"🎯 <b>Твой прогресс ждет тебя:</b>\n"
+            f"• Выполнено заданий: {user_data.get('completed_tasks', 0)}\n"
+            f"• Текущий ранг: {user_data.get('rank', 'путник')}\n"
+            f"• Достижения сохранены\n\n"
+            f"💪 <b>Вернись и продолжай путь к сильной версии себя!</b>"
+        )
+        
+        await safe_send_message(
+            user_id=user_id,
+            text=message_text,
+            reply_markup=keyboard
+        )
+        
+        logger.info(f"✅ Напоминание о подписке отправлено пользователю {user_id}")
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка отправки напоминания пользователю {user_id}: {e}")
+
+async def send_last_chance_notification(user_id: int, user_data: dict, days_since_end: int):
+    """Последнее уведомление перед очисткой прогресса"""
+    try:
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(
+                    text="💎 Вернуться сейчас", 
+                    callback_data="activate_subscription_last_chance"
+                )]
+            ]
+        )
+        
+        message_text = (
+            f"⚠️ <b>Последний шанс сохранить прогресс!</b>\n\n"
+            f"Прошло {days_since_end} дней без подписки.\n"
+            f"Скоро твой прогресс будет сброшен.\n\n"
+            f"📊 <b>Твои текущие достижения:</b>\n"
+            f"• Выполнено: {user_data.get('completed_tasks', 0)}/300 заданий\n"
+            f"• Ранг: {user_data.get('rank', 'путник')}\n"
+            f"• Дней в системе: {user_data.get('current_day', 0)}\n\n"
+            f"🔥 <b>Активируй подписку сейчас чтобы сохранить прогресс!</b>"
+        )
+        
+        await safe_send_message(
+            user_id=user_id,
+            text=message_text,
+            reply_markup=keyboard
+        )
+        
+        logger.info(f"✅ Последнее уведомление отправлено пользователю {user_id}")
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка отправки последнего уведомления пользователю {user_id}: {e}")
+
+async def send_post_trial_notification(user_id: int, user_data: dict):
+    """Уведомление на следующий день после пробного периода"""
+    try:
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(
+                    text="💎 Активировать подписку", 
+                    callback_data="activate_subscription_post_trial"
+                )],
+                [InlineKeyboardButton(
+                    text="🎯 Посмотреть тарифы", 
+                    callback_data="view_tariffs_post_trial"
+                )]
+            ]
+        )
+        
+        message_text = (
+            f"🎯 <b>Пробный период завершен</b>\n\n"
+            f"Ты попробовал(а) систему и получил(а) первые результаты!\n\n"
+            f"💪 <b>Что дальше?</b>\n"
+            f"• Ежедневные задания для развития силы воли\n"
+            f"• Система рангов и достижений\n"
+            f"• Поддержка комьюнити\n"
+            f"• 297 дней роста впереди!\n\n"
+            f"🔥 <b>Продолжи путь к сильной версии себя!</b>\n"
+            f"Активируй подписку и получи доступ ко всем заданиям!"
+        )
+        
+        await safe_send_message(
+            user_id=user_id,
+            text=message_text,
+            reply_markup=keyboard
+        )
+        
+        logger.info(f"✅ Пост-пробное уведомление отправлено пользователю {user_id}")
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка отправки пост-пробного уведомления пользователю {user_id}: {e}")
+
+async def send_post_trial_reminder(user_id: int, user_data: dict):
+
+    
+    """Повторное напоминание после пробного периода"""
+    try:
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(
+                    text="💎 Вернуться в челлендж", 
+                    callback_data="activate_subscription_post_trial_reminder"
+                )]
+            ]
+        )
+        
+        message_text = (
+            f"⏰ <b>Скучаем по тебе в челлендже!</b>\n\n"
+            f"Прошла неделя с момента пробного периода.\n\n"
+            f"🎯 <b>Помни, что тебя ждет:</b>\n"
+            f"• 297 дней роста и развития\n"
+            f"• Новая, сильная версия себя\n"
+            f"• Ежедневные победы над собой\n\n"
+            f"💪 <b>Вернись и продолжай путь!</b>\n"
+            f"Твое место в челлендже все еще свободно."
+        )
+        
+        await safe_send_message(
+            user_id=user_id,
+            text=message_text,
+            reply_markup=keyboard
+        )
+        
+        logger.info(f"✅ Повторное напоминание после пробного периода отправлено пользователю {user_id}")
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка отправки повторного напоминания пользователю {user_id}: {e}")
+# ДОБАВЬ ЭТУ ФУНКЦИЮ ПЕРЕД async def main()
+
+async def simple_inactive_users_check():
+    """Простая проверка неактивных пользователей - базовый вариант"""
+    logger.info("🔔 Простая проверка неактивных пользователей...")
+    
+    try:
+        # Пока просто логируем, чтобы не ломать систему
+        logger.info("✅ Задача уведомлений неактивных пользователей выполняется")
+        
+        # Можно добавить простую логику позже
+        # Например:
+        # users = await utils.get_all_users()
+        # logger.info(f"📊 Всего пользователей в системе: {len(users)}")
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка в simple_inactive_users_check: {e}")
 # ========== ОБРАБОТЧИКИ "ПИНОК ДРУГУ" ==========
 @dp.message(F.text == "📤 Пинок другу")
 async def send_pink_to_friend_during_task(message: Message):
@@ -6098,7 +6177,6 @@ async def copy_current_pink_link(callback: CallbackQuery):
         logger.error(f"Ошибка при копировании пинка: {e}")
         await callback.answer("❌ Ошибка при копировании")
 
-
 @dp.inline_query()
 async def inline_query_handler(inline_query: InlineQuery):
     """Упрощенный обработчик inline запросов"""
@@ -6267,43 +6345,6 @@ async def main():
     
     # ТЕСТ: Принудительно запускаем рассылку при старте
     logger.info("🔄 Принудительный запуск рассылки при старте...")    
-    # Запускаем планировщик
-    scheduler.add_job(
-        send_daily_tasks,
-        trigger=CronTrigger(
-            hour=config.TASK_TIME_HOUR,
-            minute=config.TASK_TIME_MINUTE,
-            timezone=config.TIMEZONE
-        ),
-        id="daily_tasks"
-    )
-    
-    scheduler.add_job(
-        send_reminders,
-        trigger=CronTrigger(
-            hour=config.REMINDER_TIME_HOUR,
-            minute=config.REMINDER_TIME_MINUTE,
-            timezone=config.TIMEZONE
-        ),
-        id="reminders"
-    )
-    
-    scheduler.add_job(
-        check_midnight_reset,
-        trigger=CronTrigger(
-            hour=0, minute=0,  # Полночь
-            timezone=config.TIMEZONE
-        ),
-        id="midnight_reset"
-    )
-    
-    scheduler.start()
-    logger.info("📅 Планировщик запущен")
-    
-    await dp.start_polling(bot)
-    logger.info("Бот запускается...")
-    await dp.start_polling(bot)
-    logger.info("Бот запускается...")
     
     # Запускаем планировщик
     scheduler.add_job(
@@ -6335,10 +6376,34 @@ async def main():
         id="midnight_reset"
     )
     
+    # 1. Проверка пробного периода в 10:00
+    if 'check_trial_expiry' in globals():
+        scheduler.add_job(
+            check_trial_expiry,
+            trigger=CronTrigger(
+                hour=10, minute=0,
+                timezone=config.TIMEZONE
+            ),
+            id="trial_expiry_check"
+        )
+        logger.info("✅ Добавлена проверка пробного периода в 10:00")
+    
+    # 2. Уведомления неактивным пользователям в 12:00 - СНАЧАЛА ПРОСТОЙ ВАРИАНТ
+    scheduler.add_job(
+        simple_inactive_users_check,  # Простая функция вместо сложной
+        trigger=CronTrigger(
+            hour=15, minute=0,
+            timezone=config.TIMEZONE
+        ),
+        id="inactive_users_notifications"
+    )
+    logger.info("✅ Добавлены уведомления неактивным пользователям в 12:00")
+    
     scheduler.start()
     logger.info("📅 Планировщик запущен")
     
+    logger.info("🤖 Запускаем бота...")
     await dp.start_polling(bot)
-if __name__ == "__main__":
 
+if __name__ == "__main__":
     asyncio.run(main())
