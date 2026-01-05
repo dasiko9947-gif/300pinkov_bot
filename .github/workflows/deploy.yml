@@ -26,12 +26,24 @@ jobs:
           mkdir -p /home/botuser/telegram-bot
           cd /home/botuser/telegram-bot
           
+          echo "🔄 Создаём бэкап данных..."
+          cp users_data.json users_data.json.backup 2>/dev/null || echo "users_data.json не найден — пропускаем"
+          cp stages.json stages.json.backup 2>/dev/null || echo "stages.json не найден — пропускаем"
+          cp payments_data.json payments_data.json.backup 2>/dev/null || echo "payments_data.json не найден — пропускаем"
+          cp invite_codes.json invite_codes.json.backup 2>/dev/null || echo "invite_codes.json не найден — пропускаем"
+
           echo "🔄 Забираем код из GitHub..."
           git init -q
           git remote remove origin 2>/dev/null || true
-          git remote add origin https://github.com/dasiko9947-gif/300pinkov_bot.git
+          git remote add origin https://github.com/dasiko9947-gif/300pinkov_bot.git  
           git fetch --depth=1 origin main -q
           git reset --hard origin/main -q
+
+          echo "🔄 Восстанавливаем данные..."
+          cp users_data.json.backup users_data.json 2>/dev/null || echo "users_data.json.backup не найден — пропускаем"
+          cp stages.json.backup stages.json 2>/dev/null || echo "stages.json.backup не найден — пропускаем"
+          cp payments_data.json.backup payments_data.json 2>/dev/null || echo "payments_data.json.backup не найден — пропускаем"
+          cp invite_codes.json.backup invite_codes.json 2>/dev/null || echo "invite_codes.json.backup не найден — пропускаем"
 
           # 2. Устанавливаем venv
           echo "🐍 Настраиваем виртуальное окружение..."
@@ -48,7 +60,7 @@ jobs:
           if [ -f requirements.txt ]; then
             pip install -r requirements.txt -q
           else
-            pip install aiogram yookassa apscheduler python-dotenv pytz aiofiles requests -q
+            pip install aiogram yookassa apscheduler python-dotenv pytz aiofiles requests watchdog -q
           fi
 
           # 4. Создаем .env файл
