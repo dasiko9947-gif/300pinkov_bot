@@ -41,22 +41,26 @@ async def add_referral(referrer_id, referred_id):
         logger.error(f"❌ Ошибка добавления реферала: {e}")
         return False
 async def get_referral_level(ref_count):
-    """Определяет уровень реферальной системы"""
+    """Определяет уровень реферальной системы - ИСПРАВЛЕННАЯ ВЕРСИЯ"""
     try:
-        # БЕЗОПАСНАЯ ПРОВЕРКА ref_count
         if ref_count is None:
             ref_count = 0
         
-        # Сначала проверяем высшие уровни
+        # Сортируем по возрастанию min_refs
         levels = list(config.REFERRAL_LEVELS.items())
-        levels.sort(key=lambda x: x[1]['min_refs'], reverse=True)
+        levels.sort(key=lambda x: x[1]['min_refs'])  # УБИРАЕМ reverse=True!
+        
+        # Идем от меньшего к большему
+        matched_level = ("legioner", config.REFERRAL_LEVELS["legioner"])  # уровень по умолчанию
         
         for level_id, level_info in levels:
             if ref_count >= level_info['min_refs']:
-                return level_id, level_info
+                matched_level = (level_id, level_info)
+            else:
+                break  # Прерываем, так как дальше требования выше
         
-        # Если не нашли, возвращаем начальный уровень
-        return "legioner", config.REFERRAL_LEVELS["legioner"]
+        logger.info(f"📊 Определение уровня: {ref_count} рефералов -> {matched_level[0]} ({matched_level[1]['percent']}%)")
+        return matched_level
         
     except Exception as e:
         logger.error(f"❌ Ошибка определения реферального уровня: {e}")
@@ -558,46 +562,53 @@ async def get_rank_display_info(rank_id, user_data=None):
 # ========== РЕФЕРАЛЬНАЯ СИСТЕМА ==========
 
 async def save_referral_relationship(referred_id, referrer_id):
-    """Сохраняет связь реферал-реферер - ИСПРАВЛЕННЫЙ ВАРИАНТ"""
+    """Сохраняет связь реферал-реферер - УЛУЧШЕННАЯ ВЕРСИЯ"""
     try:
-        # 1. Сначала получаем данные РЕФЕРАЛА (того, кто регистрируется)
+        logger.info(f"🔗 Сохранение реферальной связи: {referred_id} -> {referrer_id}")
+        
+        # 1. Обновляем данные РЕФЕРАЛА (кто пришел по ссылке)
         referred_data = await get_user(referred_id)
         if not referred_data:
             logger.error(f"❌ Реферал {referred_id} не найден")
             return False
         
-        # 2. Сохраняем кто пригласил в данные РЕФЕРАЛА
+        # Сохраняем кто пригласил
         referred_data['invited_by'] = referrer_id
         await save_user(referred_id, referred_data)
+        logger.info(f"✅ Обновлены данные реферала {referred_id}")
         
-        # 3. Теперь добавляем РЕФЕРАЛА в список рефералов РЕФЕРЕРА
+        # 2. Добавляем в список рефералов РЕФЕРЕРА
         referrer_data = await get_user(referrer_id)
         if referrer_data:
             referrals = referrer_data.get('referrals', [])
             
-            # Проверяем, что это число, а не строка
+            # Конвертируем в список если нужно
             if not isinstance(referrals, list):
                 referrals = []
             
-            # Проверяем, нет ли уже этого реферала
-            if referred_id not in referrals:
-                referrals.append(referred_id)
+            # Преобразуем все ID в строки для сравнения
+            referrals_str = [str(ref) for ref in referrals]
+            referred_str = str(referred_id)
+            
+            if referred_str not in referrals_str:
+                # Добавляем как строку
+                referrals.append(referred_str)
                 referrer_data['referrals'] = referrals
                 await save_user(referrer_id, referrer_data)
                 
-                # Логируем действие
                 logger.info(f"✅ Реферал {referred_id} добавлен к {referrer_id}")
                 logger.info(f"📊 Теперь у {referrer_id} рефералов: {len(referrals)}")
                 return True
             else:
                 logger.info(f"ℹ️ Реферал {referred_id} уже есть у {referrer_id}")
                 return True
-                
+        else:
+            logger.warning(f"⚠️ Реферер {referrer_id} не найден")
+            return False
+            
     except Exception as e:
-        logger.error(f"❌ Ошибка сохранения реферальной связи: {e}")
-    
-    return False
-
+        logger.error(f"❌ Ошибка сохранения реферальной связи: {e}", exc_info=True)
+        return False
 async def process_referral_payment(referred_id, amount, tariff_id):
     """Обрабатывает реферальное начисление при оплате"""
     try:
@@ -1118,8 +1129,9 @@ async def generate_invite_code(length=8):
     """Генерирует случайный код"""
     return ''.join(random.choice(string.digits) for _ in range(length))
 
-async def create_invite_code(code_type="month", days=None, max_uses=1, created_by=None, pair_owner=None):
-    """Создает инвайт-код"""
+# В utils.py, обновить функцию create_invite_code:
+async def create_invite_code(code_type="month", days=None, max_uses=1, created_by=None, pair_owner=None, is_gift=False):
+    """Создает инвайт-код с поддержкой подарков"""
     invite_codes = await read_json(config.INVITE_CODES_FILE)
     
     while True:
@@ -1128,7 +1140,22 @@ async def create_invite_code(code_type="month", days=None, max_uses=1, created_b
             break
     
     if days is None:
-        days = config.INVITE_CODE_TYPES.get(code_type, {}).get('days', 30)
+        if code_type == "gift_subscription":
+            # Для подарков берем дни из переданного параметра
+            days = days if days else 30
+        else:
+            days = config.INVITE_CODE_TYPES.get(code_type, {}).get('days', 30)
+    
+    # Определяем имя в зависимости от типа
+    if is_gift:
+        if days == 30:
+            name = "🎁 Подарочная подписка на 1 месяц"
+        elif days == 365:
+            name = "🎁 Подарочная подписка на 1 год"
+        else:
+            name = f"🎁 Подарочная подписка на {days} дней"
+    else:
+        name = config.INVITE_CODE_TYPES.get(code_type, {}).get('name', 'Подписка')
     
     invite_data = {
         'code': code,
@@ -1140,7 +1167,8 @@ async def create_invite_code(code_type="month", days=None, max_uses=1, created_b
         'created_at': datetime.now().isoformat(),
         'used_by': [],
         'is_active': True,
-        'name': config.INVITE_CODE_TYPES.get(code_type, {}).get('name', 'Подписка'),
+        'is_gift': is_gift,  # Добавляем флаг подарка
+        'name': name,
         'expires_at': (datetime.now() + timedelta(days=30)).isoformat()
     }
     
@@ -1151,6 +1179,8 @@ async def create_invite_code(code_type="month", days=None, max_uses=1, created_b
     
     invite_codes[code] = invite_data
     await write_json(config.INVITE_CODES_FILE, invite_codes)
+    
+    logger.info(f"✅ Создан инвайт-код: {code}, тип: {code_type}, подарок: {is_gift}")
     return code
 
 async def use_invite_code(code, user_id):

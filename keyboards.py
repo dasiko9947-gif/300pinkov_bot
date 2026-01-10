@@ -4,9 +4,9 @@ import config
 # НОВОЕ ГЛАВНОЕ МЕНЮ
 def get_main_menu(user_id=None):
     keyboard = [
-        [KeyboardButton(text="Задание на сегодня ✅")],  # МЕНЯЕМ 🎯 на ✅
+        [KeyboardButton(text="Задание на сегодня ✅")],
         [KeyboardButton(text="Мой прогресс 🏆"), KeyboardButton(text="Подписка 💎")],
-        [KeyboardButton(text="Инвайт-коды 💌"), KeyboardButton(text="Мой легион ⚔️")]
+        [KeyboardButton(text="Сертификаты 🎁"), KeyboardButton(text="Мой легион ⚔️")]  # ИЗМЕНИЛИ ЗДЕСЬ
     ]
     
     if user_id == config.ADMIN_ID:
@@ -31,12 +31,56 @@ task_keyboard = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
+# Добавить в keyboards.py
+def get_gift_subscription_keyboard():
+    """Клавиатура для выбора подарка с ценами из config"""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(
+                text=f"🎁 1 месяц - {config.TARIFFS['month']['price']} руб.",
+                callback_data="gift_tariff_month"
+            )],
+            [InlineKeyboardButton(
+                text=f"🎁 1 год - {config.TARIFFS['year']['price']} руб.",
+                callback_data="gift_tariff_year"
+            )],
+            [InlineKeyboardButton(
+                text="🔙 Назад",
+                callback_data="back_to_invite_codes"
+            )]
+        ]
+    )
+
+def get_gift_confirmation_keyboard(invite_code, payment_id=None):
+    """Клавиатура после создания инвайт-кода для подарка"""
+    buttons = []
+    
+    if payment_id:
+        buttons.append([
+            InlineKeyboardButton(
+                text="💳 Оплатить подписку", 
+                callback_data=f"process_gift_payment_{payment_id}"
+            )
+        ])
+    
+    buttons.append([
+        InlineKeyboardButton(
+            text="📋 Скопировать код", 
+            callback_data=f"copy_gift_code_{invite_code}"
+        )
+    ])
+    
+    buttons.append([
+        InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_gift_menu")
+    ])
+    
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 # Админская клавиатура
 admin_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="📊 Статистика"), KeyboardButton(text="👥 Пользователи")],
         [KeyboardButton(text="💳 Платежи"), KeyboardButton(text="🎫 Инвайт-коды")],
-        [KeyboardButton(text="📤 Заявки на вывод"), KeyboardButton(text="📈 Финансы")],
+        [KeyboardButton(text="📤 Заявки на вывод"), KeyboardButton(text="📈 Финансы")], 
         [KeyboardButton(text="🔙 Главное меню")]
     ],
     resize_keyboard=True
@@ -70,15 +114,15 @@ def get_payment_keyboard():
 
 # НОВЫЙ РАЗДЕЛ ИНВАЙТ-КОДОВ
 def get_invite_codes_keyboard():
-    """Клавиатура для раздела инвайт-кодов"""
+    """Клавиатура для раздела Сертификаты 🎁"""
     keyboard = [
         [InlineKeyboardButton(
-            text="🎫 Активировать инвайт-код", 
-            callback_data="activate_invite"
+            text="🎁 Купить подарочный сертификат",  # ПЕРВАЯ КНОПКА
+            callback_data="gift_subscription"
         )],
         [InlineKeyboardButton(
-            text="🎁 Подарить подписку другу", 
-            callback_data="gift_subscription"
+            text="🎫 Активировать инвайт-код",  # ВТОРАЯ КНОПКА
+            callback_data="activate_invite"
         )],
         [InlineKeyboardButton(
             text="🔙 Главное меню", 
@@ -132,6 +176,7 @@ def get_admin_invite_keyboard():
             [InlineKeyboardButton(text="➕ Создать инвайт-код", callback_data="invite_create")],
             [InlineKeyboardButton(text="📋 Список активных кодов", callback_data="invite_list")],
             [InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")]
+            
         ]
     )
 

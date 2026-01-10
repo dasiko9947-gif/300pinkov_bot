@@ -945,7 +945,7 @@ async def process_ready_confirmation(message: Message, state: FSMContext):
         "task_completed_today": False,
         "debts": [],
         "last_activity": datetime.now().isoformat(),
-        "invited_by": referrer_id,
+        "invited_by": referrer_id,  # Сохраняем кто пригласил
         "reserved_for_withdrawal": 0,
         "referral_stats": {
             "total_earned": 0,
@@ -955,6 +955,17 @@ async def process_ready_confirmation(message: Message, state: FSMContext):
     }
     
     await save_user(user.id, new_user_data)
+    
+    # ⭐⭐⭐ ВАЖНОЕ ИСПРАВЛЕНИЕ: Сохраняем реферальную связь ⭐⭐⭐
+    if referrer_id:
+        # Импортируем функцию из utils
+        from utils import save_referral_relationship
+        success = await save_referral_relationship(user.id, referrer_id)
+        
+        if success:
+            logger.info(f"✅ Сохранена реферальная связь: {user.id} -> {referrer_id}")
+        else:
+            logger.error(f"❌ Не удалось сохранить реферальную связь: {user.id} -> {referrer_id}")
     
     logger.info(f"🔍 ОТЛАДКА: Новый пользователь {user.id}, архетип: {archetype}")
     
@@ -1307,40 +1318,620 @@ async def activate_invite_handler(callback: CallbackQuery, state: FSMContext):
         "Введите инвайт-код для активации подписки:"
     )
     await state.set_state(UserStates.waiting_for_invite)
-
-# НОВЫЙ обработчик подарка подписки
-@dp.callback_query(F.data == "gift_subscription")
-async def gift_subscription_handler(callback: CallbackQuery):
-    """Подарок подписки другу"""
-    user = callback.from_user
+@dp.message(F.text == "Сертификаты 🎁")
+async def show_certificates_menu(message: Message):
+    """Показывает меню сертификатов"""
+    user = message.from_user
     if not user:
-        await callback.answer("Ошибка")
         return
         
-    if not callback.message:
-        await callback.answer("Ошибка")
+    user_id = user.id
+    user_data = await utils.get_user(user_id)
+    
+    if not user_data:
+        await message.answer("Сначала зарегистрируйся через /start")
         return
     
     message_text = (
-        "🎁 <b>ПОДАРОК ПОДПИСКИ ДРУГУ</b>\n\n"
-        "Хочешь сделать подарок? Отличная идея! 🎉\n\n"
-        "💎 <b>Доступные варианты подарков:</b>\n"
-        "• 📅 Месячная подписка - 300 руб.\n"
-        "• 🎯 Годовая подписка - 3000 руб.\n"
-        "• 👥 Парная годовая - 5000 руб.\n\n"
-        "🎫 <b>Как это работает:</b>\n"
-        "1. Выбираешь тариф подписки\n"
-        "2. Оплачиваешь через ЮKassa\n"
-        "3. Получаешь инвайт-код\n"
-        "4. Передаешь код другу\n"
-        "5. Друг активирует подписку!\n\n"
-        "Выбери тариф для подарка:"
+        "<b>СЕРТИФИКАТЫ 🎁</b>\n\n"
+        "🎁 <b>Купить подарочный сертификат</b> - подарить подписку другу с красивым сертификатом спартанца\n\n"
+        "🎫 <b>Активировать инвайт-код</b> - если у тебя есть код активации или сертификат\n\n"
+        "Выбери действие:"
     )
     
-    # Используем ту же клавиатуру что и для обычной подписки
-    await callback.message.edit_text(message_text, reply_markup=keyboards.get_payment_keyboard())
-    await callback.answer()
+    # Используем существующую клавиатуру для инвайт-кодов
+    from keyboards import get_invite_codes_keyboard
+    await message.answer(message_text, reply_markup=get_invite_codes_keyboard())
+# НОВЫЙ обработчик подарка подписки
+# ЗАМЕНИТЬ существующий обработчик gift_subscription_handler на этот:
+@dp.callback_query(F.data == "gift_subscription")
+async def gift_subscription_handler(callback: CallbackQuery):
+    """Подарок подписки другу - исправленная версия"""
+    user = callback.from_user
+    if not user:
+        try:
+            await callback.answer("❌ Ошибка пользователя")
+        except:
+            pass
+        return
+    
+    if not callback.message:
+        try:
+            await callback.answer("❌ Ошибка: сообщение не найдено")
+        except:
+            pass
+        return
+    
+    try:
+        message_text = (
+            "🎁 <b>ПОДАРОЧНЫЙ СЕРТИФИКАТ СПАРТАНЦА</b>\n\n"
+    "💝 <b>Хотите сделать незабываемый подарок?</b>\n\n"
+    "🎫 <b>Что вы получите:</b>\n"
+    "1. Выбираете тариф подписки\n"
+    "2. Оплачиваете через ЮKassa\n"
+    "3. Получаете инвайт-код и красивый сертификат спартанца\n"
+    "4. Сертификат можно распечатать для физического подарка\n"
+    "5. Друг активирует подписку по QR-коду\n\n"
+    "👥 <b>Преимущества сертификата:</b>\n"
+    "• Подарочный код действует 30 дней\n"
+    "• Красивый дизайн в стиле спартанца\n"
+    "Выберите тариф для сертификата:"
+)
+        
+        # Используем НОВУЮ клавиатуру для подарков
+        from keyboards import get_gift_subscription_keyboard
+        await callback.message.edit_text(
+            message_text, 
+            reply_markup=get_gift_subscription_keyboard()
+        )
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка в gift_subscription_handler: {e}")
+        try:
+            await callback.answer("❌ Ошибка при загрузке тарифов")
+        except:
+            pass
+    finally:
+        try:
+            await callback.answer()
+        except:
+            pass
 
+# Добавить в bot.py после обработчика gift_subscription_handler
+@dp.callback_query(F.data.startswith("gift_tariff_"))
+async def process_gift_tariff_selection(callback: CallbackQuery):
+    """Обработка выбора тарифа для подарка"""
+    # БЕЗОПАСНАЯ ПРОВЕРКА ВСЕХ АТРИБУТОВ
+    if not callback:
+        return
+    
+    if not hasattr(callback, 'data') or not callback.data:
+        try:
+            await callback.answer("❌ Ошибка данных")
+        except:
+            pass
+        return
+    
+    if not hasattr(callback, 'from_user') or not callback.from_user:
+        try:
+            await callback.answer("❌ Ошибка пользователя")
+        except:
+            pass
+        return
+    
+    user = callback.from_user
+    
+    if not callback.message:
+        try:
+            await callback.answer("❌ Ошибка: сообщение не найдено")
+        except:
+            pass
+        return
+    
+    # БЕЗОПАСНОЕ ИСПОЛЬЗОВАНИЕ replace
+    try:
+        callback_data = str(callback.data) if callback.data else ""
+        tariff_id = callback_data.replace("gift_tariff_", "")
+    except AttributeError:
+        try:
+            await callback.answer("❌ Ошибка обработки данных")
+        except:
+            pass
+        return
+    
+    if not tariff_id:
+        try:
+            await callback.answer("❌ Неверный тариф")
+        except:
+            pass
+        return
+    
+    # Используем цены из config.TARIFFS
+    base_tariff = config.TARIFFS.get(tariff_id)
+    if not base_tariff:
+        try:
+            await callback.answer("❌ Тариф не найден")
+        except:
+            pass
+        return
+    
+    # Создаем конфигурацию для подарка на основе основного тарифа
+    gift_tariff = {
+        "name": f"🎁 Подарочная подписка {base_tariff['name'].lower()}",
+        "price": base_tariff['price'],  # ← БЕРЕМ ЦЕНУ ИЗ CONFIG
+        "days": base_tariff['days'],    # ← БЕРЕМ ДНИ ИЗ CONFIG
+        "type": f"gift_{tariff_id}"
+    }
+    
+    try:
+        # Создаем платеж в ЮKassa с пометкой что это подарок
+        user_id = user.id
+        description = f"{gift_tariff['name']} для пользователя {user.first_name or user.id}"
+        
+        payment_data = await payments.create_yookassa_payment(
+            amount=gift_tariff['price'],  # Используем цену из конфига
+            description=description,
+            user_id=user_id,
+            tariff_id=f"gift_{tariff_id}"  # Добавляем префикс gift
+        )
+        
+        if not payment_data:
+            try:
+                await callback.answer("❌ Ошибка создания платежа. Попробуйте позже.")
+            except:
+                pass
+            return
+        
+        # Формируем сообщение об оплате подарка
+        message_text = (
+            f"🎁 <b>ОПЛАТА ПОДАРОЧНОГО СЕРТИФИКАТА</b>\n\n"  # ОБНОВЛЕНО
+    f"📦 <b>Тариф:</b> {gift_tariff['name']}\n"
+    f"💰 <b>Сумма:</b> {gift_tariff['price']} руб.\n"
+    f"⏰ <b>Срок:</b> {gift_tariff['days']} дней\n\n"
+    f"🎫 <b>После успешной оплаты:</b>\n"
+    f"• Вы получите инвайт-код и красивый сертификат\n"
+    f"• Сертификат можно распечатать для физического подарка\n"
+    f"• QR-код для быстрой активации\n"
+    f"• Можно подарить любому человеку\n\n"
+    f"🔗 <b>Ссылка для оплаты:</b>\n"
+    f"<a href='{payment_data['confirmation_url']}'>Нажмите для перехода к оплате</a>\n\n"
+    f"📱 <b>После оплаты:</b>\n"
+    f"1. Вернитесь в бота\n"
+    f"2. Нажмите кнопку «✅ Проверить оплату» ниже\n"
+    f"3. Получите сертификат с QR-кодом для подарка\n\n"
+    f"⏳ <b>Платеж действителен 30 минут</b>\n"
+    f"💡 <b>ID платежа:</b> <code>{payment_data['payment_id'][:8]}...</code>"
+)
+        
+        # Клавиатура с кнопками
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(
+                    text="🔗 Перейти к оплате", 
+                    url=payment_data['confirmation_url']
+                )],
+                [InlineKeyboardButton(
+                    text="✅ Проверить оплату", 
+                    callback_data=f"check_gift_payment_{payment_data['payment_id']}"
+                )],
+                [InlineKeyboardButton(
+                    text="🔄 Обновить страницу оплаты", 
+                    callback_data=f"refresh_gift_payment_{payment_data['payment_id']}"
+                )],
+                [InlineKeyboardButton(
+                    text="🔙 Назад к выбору подарка", 
+                    callback_data="gift_subscription"
+                )]
+            ]
+        )
+        
+        try:
+            await callback.message.edit_text(message_text, reply_markup=keyboard)
+            await callback.answer("✅ Платеж создан! Перейдите по ссылке для оплаты.")
+        except Exception as e:
+            logger.error(f"Ошибка при редактировании сообщения: {e}")
+            try:
+                await callback.answer("❌ Не удалось обновить сообщение")
+            except:
+                pass
+            
+    except Exception as e:
+        logger.error(f"❌ Ошибка создания платежа для подарка: {e}")
+        try:
+            await callback.answer("❌ Ошибка при создании платежа")
+        except:
+            pass
+# Добавить в bot.py
+@dp.callback_query(F.data.startswith("check_gift_payment_"))
+async def check_gift_payment_handler(callback: CallbackQuery):
+    """Проверка статуса оплаты подарка"""
+    # БЕЗОПАСНАЯ ПРОВЕРКА ВСЕХ ВОЗМОЖНЫХ None
+    if not callback or not callback.data:
+        try:
+            await callback.answer("❌ Ошибка данных")
+        except:
+            pass
+        return
+    
+    # Безопасное получение payment_id
+    try:
+        payment_id = str(callback.data).replace("check_gift_payment_", "") if callback.data else ""
+    except AttributeError:
+        payment_id = ""
+    
+    if not payment_id:
+        try:
+            await callback.answer("❌ ID платежа не найден")
+        except:
+            pass
+        return
+    
+    if not callback.from_user:
+        try:
+            await callback.answer("❌ Ошибка пользователя")
+        except:
+            pass
+        return
+    
+    user = callback.from_user
+    
+    try:
+        await callback.answer("🔄 Проверяем статус платежа...")
+        
+        # Проверяем статус платежа
+        payment_status = await payments.check_payment_status(payment_id)
+        payment_data = await payments.get_payment_data(payment_id)
+        
+        if not payment_data:
+            await safe_edit_message(callback, "❌ Платеж не найден в базе данных")
+            return
+        
+        if payment_data.get('user_id') != user.id:
+            await safe_edit_message(callback, "❌ Это не ваш платеж")
+            return
+        
+        if payment_status == "succeeded":
+            # Обрабатываем успешную оплату подарка
+            await activate_gift_subscription(payment_data, callback)
+            
+        elif payment_status == "pending":
+            check_keyboard = InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(
+                    text="🔄 Проверить еще раз", 
+                    callback_data=f"check_gift_payment_{payment_id}"
+                )
+            ]])
+            
+            await safe_edit_message(
+                callback,
+                "⏳ <b>Платеж еще обрабатывается</b>\n\n"
+                "Обычно это занимает несколько минут.\n"
+                "Попробуйте проверить статус через 2-3 минуты.",
+                check_keyboard
+            )
+            
+        elif payment_status == "canceled":
+            from keyboards import get_gift_subscription_keyboard
+            await safe_edit_message(
+                callback,
+                "❌ <b>Платеж отменен</b>\n\n"
+                "Вы можете создать новый платеж или выбрать другой тариф.",
+                get_gift_subscription_keyboard()
+            )
+            
+        elif payment_status is None:
+            check_keyboard = InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(
+                    text="🔄 Попробовать снова", 
+                    callback_data=f"check_gift_payment_{payment_id}"
+                )
+            ]])
+            
+            await safe_edit_message(
+                callback,
+                "❌ <b>Не удалось проверить статус платежа</b>\n\n"
+                "Попробуйте позже или обратитесь в поддержку.",
+                check_keyboard
+            )
+        else:
+            check_keyboard = InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(
+                    text="🔄 Проверить статус", 
+                    callback_data=f"check_gift_payment_{payment_id}"
+                )
+            ]])
+            
+            await safe_edit_message(
+                callback,
+                f"📊 <b>Статус платежа:</b> {payment_status}\n\n"
+                "Продолжайте ожидание или попробуйте проверить позже.",
+                check_keyboard
+            )
+            
+    except Exception as e:
+        logger.error(f"❌ Ошибка проверки платежа подарка: {e}")
+        await safe_edit_message(
+            callback,
+            "❌ <b>Произошла ошибка при проверке платежа</b>\n\n"
+            "Попробуйте позже или обратитесь в поддержку."
+        )
+# Добавить в bot.py
+async def activate_gift_subscription(payment_data, callback):
+    """Активация подарка после успешной оплаты с красивым сертификатом спартанца"""
+    if not callback:
+        logger.error("❌ activate_gift_subscription: callback is None")
+        return
+    
+    # Безопасное получение данных
+    user_id = payment_data.get('user_id')
+    tariff_id = payment_data.get('tariff_id', '')
+    
+    if not user_id:
+        logger.error("❌ activate_gift_subscription: user_id is None")
+        await safe_edit_message(callback, "❌ Ошибка: не найден ID пользователя")
+        return
+    
+    # Определяем тип подарка и берем данные из config.TARIFFS
+    base_tariff_id = tariff_id.replace("gift_", "")
+    base_tariff = config.TARIFFS.get(base_tariff_id)
+    
+    if base_tariff:
+        tariff = {
+            "name": f"🎁 Подарочная подписка {base_tariff['name'].lower()}",
+            "days": base_tariff['days'],
+            "price": base_tariff['price']
+        }
+    else:
+        tariff = {
+            "name": "🎁 Подарочная подписка",
+            "days": 30,
+            "price": payment_data.get('amount', 0)
+        }
+    
+    try:
+        # ОБНОВЛЯЕМ статус платежа
+        await payments.update_payment_status(payment_data['payment_id'], 'succeeded')
+        
+        # Создаем инвайт-код для подарка
+        invite_code = await utils.create_invite_code(
+            code_type="gift_subscription",
+            days=tariff['days'],
+            max_uses=1,
+            created_by=user_id,
+            is_gift=True
+        )
+        
+        if not invite_code:
+            raise Exception("Не удалось создать инвайт-код")
+        
+        # СОЗДАЕМ СЕРТИФИКАТ СПАРТАНЦА
+        try:
+            import os
+            from aiogram.types import FSInputFile
+            
+            # Проверяем существует ли модуль сертификатов
+            try:
+                from certificates.spartan_generator import spartan_certificate_generator
+                generator_available = True
+            except ImportError:
+                logger.warning("⚠️ Модуль certificates.spartan_generator не найден")
+                generator_available = False
+            
+            if generator_available:
+                # Получаем данные покупателя БЕЗОПАСНО
+                buyer_name = "Покупатель"
+                buyer_username = None
+                
+                if hasattr(callback, 'from_user') and callback.from_user:
+                    buyer_name = callback.from_user.first_name or "Покупатель"
+                    buyer_username = callback.from_user.username
+                
+                buyer_data = {
+                    'first_name': buyer_name,
+                    'username': buyer_username,
+                    'user_id': user_id
+                }
+                
+                html_content = spartan_certificate_generator.generate_certificate(
+                    invite_code=invite_code,
+                    tariff_data=tariff,
+                    buyer_data=buyer_data,
+                    config=config
+                )
+                
+                # Сохраняем файл
+                filepath = spartan_certificate_generator.save_certificate(invite_code, html_content)
+                
+                if filepath and os.path.exists(filepath):
+                    logger.info(f"✅ Спартанский сертификат создан: {filepath}")
+                    
+                    # Отправляем единое сообщение с кодом и сертификатом
+                    certificate_file = FSInputFile(filepath)
+                    
+                    combined_message = (
+                        f"🎉 <b>ПОДАРОК ОПЛАЧЕН!</b>\n\n"
+                        f"💝 <b>Поздравляем с покупкой!</b>\n\n"
+                        f"🎫 <b>Инвайт-код для подарка:</b>\n"
+                        f"<code>{invite_code}</code>\n\n"
+                        f"📄 Подарочный сертификат прикреплён к сообщению.\n"
+                        f"Его можно распечатать и подарить физически.\n\n"
+                        f"📝 <b>Как подарить:</b>\n"
+                        f"1. Отправьте код или сертификат другу\n"
+                        f"2. Он переходит в бота @{config.BOT_USERNAME}\n"
+                        f"3. Нажимает START для регистрации\n"
+                        f"4. Выбирает «Сертификаты 🎁» → «🎫 Активировать инвайт-код»\n"  # ОБНОВЛЕНО
+                        f"5. Вводит код \n\n"
+                        f"⚠️ <b>Важно:</b>\n"
+                        f"• Код можно использовать только 1 раз\n"
+                        f"• Действителен 30 дней\n"
+                    )
+                    
+                    # Отправляем сообщение с документом
+                    await bot.send_document(
+                        chat_id=user_id,
+                        document=certificate_file,
+                        caption=combined_message,
+                        parse_mode="HTML"
+                    )
+                    
+                    # Удаляем временный файл через 60 секунд
+                    await asyncio.sleep(60)
+                    try:
+                        os.remove(filepath)
+                        logger.info(f"🗑️ Временный файл удален: {filepath}")
+                    except Exception as delete_error:
+                        logger.error(f"Ошибка удаления файла {filepath}: {delete_error}")
+                else:
+                    logger.error("❌ Не удалось создать файл сертификата")
+                    generator_available = False
+            else:
+                logger.warning("⚠️ Генератор сертификатов недоступен, отправляем только код")
+                generator_available = False
+                
+        except Exception as cert_error:
+            logger.error(f"❌ Ошибка создания сертификата: {cert_error}", exc_info=True)
+            generator_available = False
+        
+        # Если генератор сертификатов недоступен, отправляем только код
+        if not generator_available:
+            fallback_message = (
+                f"🎉 <b>ПОДАРОК ОПЛАЧЕН!</b>\n\n"
+                f"💝 <b>Поздравляем с покупкой!</b>\n\n"
+                f"🎫 <b>Инвайт-код для подарка:</b>\n"
+                f"<code>{invite_code}</code>\n\n"
+                f"📝 <b>Как подарить:</b>\n"
+                f"1. Отправьте этот код другу\n"
+                f"2. Он должен перейти в бота @{config.BOT_USERNAME}\n"
+                f"3. Нажать START для регистрации\n"
+                f"4. Затем выбрать «Сертификаты 🎁» → «🎫 Активировать инвайт-код»\n"  # ОБНОВЛЕНО
+                f"5. Ввести код и активировать подписку\n\n"
+                f"⚠️ <b>Внимание:</b>\n"
+                f"• Код можно использовать только 1 раз!\n"
+                f"• Действителен 30 дней\n"
+                f"• Можно подарить любому человеку"
+            )
+            
+            # Отправляем сообщение с кодом
+            await bot.send_message(
+                chat_id=user_id,
+                text=fallback_message,
+                parse_mode="HTML"
+            )
+        
+        # Редактируем оригинальное сообщение
+        await safe_edit_message(callback, "✅ Подарок успешно создан! Проверьте сообщения от бота.")
+        
+        # УВЕДОМЛЯЕМ админа о подарке
+        try:
+            buyer_name = "Покупатель"
+            buyer_username = "нет"
+            
+            if hasattr(callback, 'from_user') and callback.from_user:
+                buyer_name = callback.from_user.first_name or "Покупатель"
+                buyer_username = f"@{callback.from_user.username}" if callback.from_user.username else "нет"
+            
+            admin_message = (
+                f"🎁 <b>НОВЫЙ ПОДАРОК</b>\n\n"
+                f"👤 {buyer_name} ({buyer_username})\n"
+                f"🆔 {user_id}\n"
+                f"💎 {tariff['name']}\n"
+                f"💰 {tariff['price']} руб.\n"
+                f"🎫 Код: {invite_code}"
+            )
+            await bot.send_message(config.ADMIN_ID, admin_message, parse_mode="HTML")
+        except Exception as e:
+            logger.error(f"Ошибка уведомления админа: {e}")
+            
+    except Exception as e:
+        logger.error(f"❌ Ошибка создания подарка: {e}", exc_info=True)
+        error_message = (
+            f"❌ <b>Произошла ошибка при создании подарка</b>\n\n"
+            f"Платеж прошел успешно, но не удалось создать инвайт-код.\n"
+            f"Обратитесь в поддержку: @{config.SUPPORT_USERNAME}\n\n"
+            f"При обращении укажите ID платежа:\n"
+            f"<code>{payment_data['payment_id']}</code>"
+        )
+        await safe_edit_message(callback, error_message)
+# Добавить в bot.py
+@dp.callback_query(F.data.startswith("refresh_gift_payment_"))
+async def refresh_gift_payment_handler(callback: CallbackQuery):
+    """Обновление страницы оплаты подарка"""
+    if not callback or not callback.data:
+        try:
+            await callback.answer("❌ Ошибка данных")
+        except:
+            pass
+        return
+        
+    if not callback.message:
+        try:
+            await callback.answer("❌ Ошибка: сообщение не найдено")
+        except:
+            pass
+        return
+        
+    try:
+        payment_id = str(callback.data).replace("refresh_gift_payment_", "") if callback.data else ""
+    except AttributeError:
+        payment_id = ""
+    
+    payment_data = await payments.get_payment_data(payment_id)
+    
+    if payment_data:
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(
+                text="🔗 Перейти к оплате", 
+                url=payment_data['confirmation_url']
+            )],
+            [InlineKeyboardButton(
+                text="✅ Проверить оплату", 
+                callback_data=f"check_gift_payment_{payment_data['payment_id']}"
+            )]
+        ])
+        
+        success = await safe_edit_reply_markup(callback, keyboard)
+        if success:
+            await callback.answer("✅ Ссылка обновлена")
+        else:
+            await callback.answer("❌ Ошибка обновления")
+    else:
+        await callback.answer("❌ Платеж не найден")
+# Добавить в bot.py
+@dp.callback_query(F.data == "back_to_invite_codes")
+async def back_to_invite_codes_handler(callback: CallbackQuery):
+    """Возврат к разделу инвайт-кодов"""
+    if not callback or not callback.message:
+        return
+    
+    user = callback.from_user
+    if not user:
+        try:
+            await callback.answer("❌ Ошибка пользователя")
+        except:
+            pass
+        return
+    
+    user_id = user.id
+    user_data = await utils.get_user(user_id)
+    
+    if not user_data:
+        try:
+            await callback.answer("Сначала зарегистрируйся через /start")
+        except:
+            pass
+        return
+    
+    message_text = (
+        "<b>ИНВАЙТ-КОДЫ 💌</b>\n\n"
+        "🎫 <b>Активировать инвайт-код</b> - если у тебя есть код активации\n\n"
+        "🎁 <b>Подарить подписку другу</b> - купить доступ в подарок\n\n"
+        "Выбери действие:"
+    )
+    
+    # Используем существующую клавиатуру для инвайт-кодов
+    from keyboards import get_invite_codes_keyboard
+    await callback.message.edit_text(message_text, reply_markup=get_invite_codes_keyboard())
+    await callback.answer()
 # Обработчик реферальной программы из нового раздела
 @dp.callback_query(F.data == "show_referral")
 async def show_referral_from_legion(callback: CallbackQuery):
@@ -1398,6 +1989,7 @@ async def show_referral_from_legion(callback: CallbackQuery):
 # Обработчик кнопки "⚔️ ВЫПОЛНИЛ" 
 # В обработчике task_completed обновим логику:
 # ЗАМЕНИТЬ весь обработчик на упрощенную версию:
+# В обработчике task_completed обновляем логику (уже есть в коде):
 @dp.message(F.text == "✅ ГОТОВО")
 async def task_completed(message: Message):
     user = message.from_user
@@ -1425,14 +2017,24 @@ async def task_completed(message: Message):
     user_data['completed_tasks'] = user_data.get('completed_tasks', 0) + 1
     user_data['task_completed_today'] = True
     
+    # ⭐⭐⭐ ВАЖНОЕ ИСПРАВЛЕНИЕ: Проверяем пробный период перед увеличением счетчика
+    in_trial = await utils.is_in_trial_period(user_data)
+    
     # Если в пробном периоде - увеличиваем счетчик
-    if await utils.is_in_trial_period(user_data):
+    if in_trial:
+        # БЕЗОПАСНО получаем счетчик пробных заданий
         trial_tasks = user_data.get('completed_tasks_in_trial', 0)
-        user_data['completed_tasks_in_trial'] = trial_tasks + 1
+        new_trial_count = trial_tasks + 1
+        
+        logger.info(f"📊 Пробный период: было {trial_tasks} заданий, станет {new_trial_count}")
+        
+        # Обновляем счетчик
+        user_data['completed_tasks_in_trial'] = new_trial_count
         
         # Проверяем, закончился ли пробный период (3 задания)
-        if trial_tasks + 1 >= 3:
+        if new_trial_count >= 3:
             user_data['trial_finished'] = True
+            logger.info(f"🎯 Пробный период завершен для пользователя {user_id}")
     
     # Обновляем ранг
     rank_updated = await utils.update_user_rank(user_data)
@@ -1445,7 +2047,7 @@ async def task_completed(message: Message):
     
     await utils.save_user(user_id, user_data)
     
-    # Получаем случайную реплику (используем класс из этого же файла)
+    # Получаем случайную реплику
     reply = await BotReplies.get_task_completed_reply(gender, rank_updated, new_rank_name)
     
     await message.answer(
@@ -1453,11 +2055,13 @@ async def task_completed(message: Message):
         reply_markup=keyboards.get_main_menu(user_id)
     )
     
-    # Проверяем, нужно ли отправить сообщение о конце пробного периода
-    if await utils.is_in_trial_period(user_data):
+    # 🔥 ВАЖНОЕ ДОБАВЛЕНИЕ: НЕМЕДЛЕННОЕ УВЕДОМЛЕНИЕ О ЗАВЕРШЕНИИ ПРОБНОГО ПЕРИОДА
+    if in_trial:
         trial_tasks = user_data.get('completed_tasks_in_trial', 0)
+        
+        # Проверяем СРАЗУ после выполнения 3-го задания
         if trial_tasks >= 3:
-            await asyncio.sleep(1)  # Небольшая пауза
+            logger.info(f"🎉 Отправляю уведомление о конце пробного периода пользователю {user_id}")
             
             trial_end_message = (
                 f"🎯 <b>Ты {gender['verb_finished']} вводный этап!</b>\n\n"
@@ -1486,6 +2090,20 @@ async def task_completed(message: Message):
             )
             
             await message.answer(trial_end_message, reply_markup=subscription_keyboard)
+            
+            # Уведомляем админа о завершении пробного периода
+            try:
+                admin_message = (
+                    f"🎯 <b>Пользователь завершил пробный период</b>\n\n"
+                    f"👤 {user.first_name} (@{user.username or 'нет'})\n"
+                    f"🆔 {user_id}\n"
+                    f"📅 Дата регистрации: {user_data.get('created_at', 'неизвестно')[:10]}\n"
+                    f"✅ Выполнено заданий: {trial_tasks}\n\n"
+                    f"Отправлено предложение о покупке подписки."
+                )
+                await bot.send_message(config.ADMIN_ID, admin_message)
+            except Exception as e:
+                logger.error(f"Ошибка уведомления админа: {e}")
     
     await utils.update_user_activity(user_id)
 # ОБНОВЛЯЕМ обработчик "Подписка 💎"
@@ -1567,17 +2185,25 @@ async def skip_task(message: Message):
     user_data['current_day'] = user_data.get('current_day', 0) + 1
     user_data['task_completed_today'] = True
     
+    # Проверяем пробный период
+    in_trial = await utils.is_in_trial_period(user_data)
+    
     # Если в пробном периоде - увеличиваем счетчик
-    if await utils.is_in_trial_period(user_data):
+    if in_trial:
         trial_tasks = user_data.get('completed_tasks_in_trial', 0)
-        user_data['completed_tasks_in_trial'] = trial_tasks + 1
+        new_trial_count = trial_tasks + 1
         
-        if trial_tasks + 1 >= 3:
+        logger.info(f"📊 Пропуск в пробном периоде: было {trial_tasks}, станет {new_trial_count}")
+        
+        user_data['completed_tasks_in_trial'] = new_trial_count
+        
+        if new_trial_count >= 3:
             user_data['trial_finished'] = True
+            logger.info(f"🎯 Пробный период завершен (пропуском) для пользователя {user_id}")
     
     await utils.save_user(user_id, user_data)
     
-    # Получаем случайную реплику (используем класс из этого же файла)
+    # Получаем случайную реплику
     reply = await BotReplies.get_task_skipped_reply(gender)
     
     await message.answer(
@@ -1585,11 +2211,12 @@ async def skip_task(message: Message):
         reply_markup=keyboards.get_main_menu(user_id)
     )
     
-    # Проверяем, нужно ли отправить сообщение о конце пробного периода
-    if await utils.is_in_trial_period(user_data):
+    # 🔥 ВАЖНОЕ ДОБАВЛЕНИЕ: Уведомление о конце пробного периода при пропуске
+    if in_trial:
         trial_tasks = user_data.get('completed_tasks_in_trial', 0)
+        
         if trial_tasks >= 3:
-            await asyncio.sleep(1)
+            logger.info(f"🎉 Отправляю уведомление о конце пробного периода после пропуска пользователю {user_id}")
             
             trial_end_message = (
                 f"🎯 <b>Ты {gender['verb_finished']} вводный этап!</b>\n\n"
@@ -1620,29 +2247,92 @@ async def skip_task(message: Message):
             await message.answer(trial_end_message, reply_markup=subscription_keyboard)
     
     await utils.update_user_activity(user_id)
-# НОВЫЙ обработчик "Инвайт-коды 💌"
-@dp.message(F.text == "Инвайт-коды 💌")
-async def show_invite_codes(message: Message):
-    """Показывает раздел инвайт-кодов"""
-    user = message.from_user
+
+# НАЙДИТЕ ЭТОТ ОБРАБОТЧИК И ОБНОВИТЕ ЕГО:
+@dp.callback_query(F.data == "activate_subscription_after_trial")
+async def activate_subscription_after_trial_handler(callback: CallbackQuery):
+    """Активация подписки после окончания пробного периода - ОБНОВЛЕННЫЙ"""
+    if not callback or not callback.message:
+        return
+        
+    user = callback.from_user
     if not user:
+        await callback.answer("Ошибка")
         return
         
     user_id = user.id
-    user_data = await get_user(user_id)
+    user_data = await utils.get_user(user_id)
     
     if not user_data:
-        await message.answer("Сначала зарегистрируйся через /start")
+        await callback.answer("Пользователь не найден")
+        return
+    
+    # Проверяем, действительно ли пробный период закончился
+    in_trial = await utils.is_in_trial_period(user_data)
+    trial_tasks = user_data.get('completed_tasks_in_trial', 0)
+    
+    # Если пробный период еще активен, информируем пользователя
+    if in_trial and trial_tasks < 3:
+        message_text = (
+            f"ℹ️ <b>Твой пробный период еще активен!</b>\n\n"
+            f"Осталось заданий: {3 - trial_tasks}\n"
+            f"Заверши пробный период, чтобы получить полное представление о системе.\n\n"
+            f"А пока можешь ознакомиться с тарифами:"
+        )
+    else:
+        # Показываем тарифы для оплаты
+        message_text = (
+            "💎 <b>АКТИВАЦИЯ ПОДПИСКИ</b>\n\n"
+            "Пробный период завершен. Выберите тариф для продолжения:\n\n"
+            "<b>После оплаты задание придет сразу же!</b> ⚡"
+        )
+    
+    try:
+        await callback.message.edit_text(message_text, reply_markup=keyboards.get_payment_keyboard())
+    except Exception as e:
+        logger.error(f"Ошибка при редактировании сообщения: {e}")
+        try:
+            await callback.message.answer(message_text, reply_markup=keyboards.get_payment_keyboard())
+        except Exception as e2:
+            logger.error(f"Ошибка при отправке сообщения: {e2}")
+    
+    await callback.answer()
+    
+# НОВЫЙ обработчик "Инвайт-коды 💌"
+@dp.callback_query(F.data == "back_to_certificates")
+async def back_to_certificates_handler(callback: CallbackQuery):
+    """Возврат к разделу сертификатов"""
+    if not callback or not callback.message:
+        return
+    
+    user = callback.from_user
+    if not user:
+        try:
+            await callback.answer("❌ Ошибка пользователя")
+        except:
+            pass
+        return
+    
+    user_id = user.id
+    user_data = await utils.get_user(user_id)
+    
+    if not user_data:
+        try:
+            await callback.answer("Сначала зарегистрируйся через /start")
+        except:
+            pass
         return
     
     message_text = (
-        "<b>ИНВАЙТ-КОДЫ 💌</b>\n\n"
-        "🎫 <b>Активировать инвайт-код</b> - если у тебя есть код активации\n\n"
-        "🎁 <b>Подарить подписку другу</b> - купить доступ в подарок\n\n"
+        "<b>СЕРТИФИКАТЫ 🎁</b>\n\n"
+        "🎁 <b>Купить подарочный сертификат</b> - подарить подписку другу с красивым сертификатом спартанца\n\n"
+        "🎫 <b>Активировать инвайт-код</b> - если у тебя есть код активации или сертификат\n\n"
         "Выбери действие:"
     )
     
-    await message.answer(message_text, reply_markup=keyboards.get_invite_codes_keyboard())
+    # Используем существующую клавиатуру для инвайт-кодов
+    await callback.message.edit_text(message_text, reply_markup=keyboards.get_invite_codes_keyboard())
+    await callback.answer()
 
 # Обновляем обработчик раздела "Мой легион"
 @dp.message(F.text == "Мой легион ⚔️")
@@ -5337,8 +6027,7 @@ async def activate_invite_from_subscription(callback: CallbackQuery, state: FSMC
     )
     await state.set_state(UserStates.waiting_for_invite)
 
-@dp.callback_query(F.data == "activate_subscription_after_trial")
-async def activate_subscription_after_trial_handler(callback: CallbackQuery):
+
     """Активация подписки после окончания пробного периода"""
     if not callback or not callback.message:
         return

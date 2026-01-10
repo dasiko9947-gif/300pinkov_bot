@@ -1,8 +1,8 @@
-aiogram
-yookassa
+aiogram>=3.0.0
+yookassa>=2.3.0
 apscheduler
 python-dotenv
 pytz
 aiofiles
 python-dateutil
-
+qrcode
