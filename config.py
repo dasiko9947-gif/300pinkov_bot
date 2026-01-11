@@ -112,7 +112,7 @@ PRIVILEGE_LINKS = {
         "Бесплатный канал 300 ПИНКОВ": "https://t.me/pinkov300"
     },
     "voin": {
-        "Набор эксклюзивных стикеров для мотивации": "https://t.me/addstickers/Pink300Stickers",
+        "Набор эксклюзивных стикеров для мотивации": "https://t.me/addstickers/pinkov30_stickers_by_TgEmodziBot",
     },
     "geroi": {
         "Возможность предлагать свои задания для системы": "https://t.me/pink300_suggestions",
