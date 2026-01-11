@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Подарочный сертификат «300 ПИНКОВ»</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=Roboto:wght@300;400;500;700&display=swap');
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Roboto', sans-serif;
+            background: linear-gradient(135deg, #000000 0%, #1a1a1a 100%);
+            color: #fff;
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+        
+        .certificate-wrapper {
+            position: relative;
+            max-width: 900px;
+            width: 100%;
+        }
+        
+        .certificate {
+            background: #0a0a0a;
+            border: 3px solid #d40000;
+            border-radius: 20px;
+            padding: 40px;
+            position: relative;
+            overflow: hidden;
+            box-shadow: 0 20px 50px rgba(212, 0, 0, 0.2);
+        }
+        
+        .certificate:before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 5px;
+            background: linear-gradient(90deg, #d40000, #ff3333, #d40000);
+        }
+        
+        .certificate:after {
+            content: '';
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: 5px;
+            background: linear-gradient(90deg, #d40000, #ff3333, #d40000);
+        }
+        
+        .header {
+            text-align: center;
+            margin-bottom: 40px;
+            position: relative;
+        }
+        
+        .title {
+            font-family: 'Playfair Display', serif;
+            font-size: 48px;
+            font-weight: 900;
+            color: #ff3333;
+            text-transform: uppercase;
+            letter-spacing: 3px;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.5);
+        }
+        
+        .subtitle {
+            font-size: 18px;
+            color: #ff6666;
+            font-weight: 300;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+        }
+        
+        .content {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 40px;
+            margin-bottom: 40px;
+        }
+        
+        @media (max-width: 768px) {
+            .content {
+                grid-template-columns: 1fr;
+            }
+        }
+        
+        .left-column {
+            display: flex;
+            flex-direction: column;
+            gap: 30px;
+        }
+        
+        .challenge-description {
+            background: rgba(212, 0, 0, 0.1);
+            border-left: 4px solid #d40000;
+            padding: 25px;
+            border-radius: 10px;
+        }
+        
+        .challenge-description h3 {
+            color: #ff3333;
+            font-family: 'Playfair Display', serif;
+            font-size: 24px;
+            margin-bottom: 15px;
+        }
+        
+        .challenge-description p {
+            line-height: 1.6;
+            color: #cccccc;
+            margin-bottom: 10px;
+        }
+        
+        .gift-details {
+            background: rgba(255, 255, 255, 0.05);
+            padding: 25px;
+            border-radius: 10px;
+            border: 1px solid rgba(212, 0, 0, 0.3);
+        }
+        
+        .gift-details h3 {
+            color: #ff3333;
+            font-family: 'Playfair Display', serif;
+            font-size: 24px;
+            margin-bottom: 15px;
+        }
+        
+        .gift-type {
+            font-size: 22px;
+            color: #fff;
+            margin: 15px 0;
+            padding: 15px;
+            background: rgba(212, 0, 0, 0.2);
+            border-radius: 8px;
+            text-align: center;
+            font-weight: 500;
+        }
+        
+        .right-column {
+            display: flex;
+            flex-direction: column;
+            gap: 30px;
+            align-items: center;
+        }
+        
+        .code-section {
+            background: rgba(255, 255, 255, 0.05);
+            border: 2px solid #d40000;
+            border-radius: 15px;
+            padding: 30px;
+            width: 100%;
+            text-align: center;
+        }
+        
+        .code-title {
+            color: #ff6666;
+            font-size: 18px;
+            margin-bottom: 20px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        
+        .invite-code {
+            font-family: 'Courier New', monospace;
+            font-size: 36px;
+            font-weight: bold;
+            color: #fff;
+            background: rgba(0, 0, 0, 0.5);
+            padding: 20px;
+            border-radius: 10px;
+            letter-spacing: 3px;
+            margin: 20px 0;
+            border: 1px solid rgba(212, 0, 0, 0.5);
+        }
+        
+        .validity {
+            color: #ff9999;
+            font-size: 14px;
+            margin-top: 10px;
+        }
+        
+        .qr-section {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 15px;
+            padding: 25px;
+            width: 100%;
+            text-align: center;
+        }
+        
+        .qr-title {
+            color: #ff6666;
+            font-size: 18px;
+            margin-bottom: 15px;
+        }
+        
+        .qr-code {
+            margin: 15px auto;
+            width: 200px;
+            height: 200px;
+            background: white;
+            padding: 10px;
+            border-radius: 10px;
+        }
+        
+        .qr-code img {
+            width: 100%;
+            height: 100%;
+        }
+        
+        .bot-info {
+            color: #cccccc;
+            font-size: 14px;
+            margin-top: 10px;
+        }
+        
+        .instructions {
+            background: rgba(212, 0, 0, 0.1);
+            padding: 30px;
+            border-radius: 15px;
+            margin-top: 30px;
+            border: 1px solid rgba(212, 0, 0, 0.3);
+        }
+        
+        .instructions h3 {
+            color: #ff3333;
+            font-family: 'Playfair Display', serif;
+            font-size: 24px;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+        
+        .steps {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            counter-reset: step-counter;
+        }
+        
+        .step {
+            background: rgba(255, 255, 255, 0.05);
+            padding: 20px;
+            border-radius: 10px;
+            position: relative;
+            padding-left: 60px;
+        }
+        
+        .step:before {
+            counter-increment: step-counter;
+            content: counter(step-counter);
+            position: absolute;
+            left: 15px;
+            top: 15px;
+            width: 30px;
+            height: 30px;
+            background: #d40000;
+            color: white;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            font-size: 18px;
+        }
+        
+        .step p {
+            color: #cccccc;
+            line-height: 1.5;
+        }
+        
+        .footer {
+            text-align: center;
+            margin-top: 40px;
+            padding-top: 20px;
+            border-top: 1px solid rgba(212, 0, 0, 0.3);
+            color: #999;
+            font-size: 14px;
+        }
+        
+        .certificate-id {
+            color: #ff6666;
+            font-weight: bold;
+        }
+        
+        .print-button {
+            display: inline-block;
+            background: linear-gradient(135deg, #d40000, #ff3333);
+            color: white;
+            padding: 12px 30px;
+            border-radius: 25px;
+            text-decoration: none;
+            font-weight: bold;
+            margin-top: 20px;
+            border: none;
+            cursor: pointer;
+            transition: transform 0.3s, box-shadow 0.3s;
+        }
+        
+        .print-button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(212, 0, 0, 0.4);
+        }
+        
+        .copy-button {
+            display: inline-block;
+            background: transparent;
+            color: #ff3333;
+            padding: 10px 20px;
+            border-radius: 25px;
+            text-decoration: none;
+            font-weight: bold;
+            margin-top: 10px;
+            border: 2px solid #ff3333;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        
+        .copy-button:hover {
+            background: #ff3333;
+            color: #000;
+        }
+        
+        @media print {
+            body {
+                background: white;
+            }
+            
+            .certificate {
+                border: 2px solid #000;
+                box-shadow: none;
+            }
+            
+            .print-button, .copy-button {
+                display: none;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="certificate-wrapper">
+        <div class="certificate">
+            <div class="header">
+                <h1 class="title">Подарочный сертификат</h1>
+                <div class="subtitle">Система развития силы воли и дисциплины</div>
+            </div>
+            
+            <div class="content">
+                <div class="left-column">
+                    <div class="challenge-description">
+                        <h3>🚀 О ЧЕЛЛЕНДЖЕ «300 ПИНКОВ»</h3>
+                        <p>Это не просто бот — это система, которая перезагружает твое мышление и дисциплину.</p>
+                        <p>Ежедневные задания, которые заставляют мозг работать по-новому. Без мотивации — только система и дисциплина.</p>
+                        <p>300 дней непрерывного роста. Каждый день — новый вызов, каждый день — новая версия себя.</p>
+                    </div>
+                    
+                    <div class="gift-details">
+                        <h3>🎁 ДЕТАЛИ ПОДАРКА</h3>
+                        <p>Вы приобрели <strong>{{subscription_name}}</strong> в подарок!</p>
+                        <div class="gift-type">
+                            {{tariff_description}}
+                        </div>
+                        <p>Срок действия подписки: <strong>{{days}} дней</strong></p>
+                        <p>Сертификат действителен до: <strong>{{expiry_date}}</strong></p>
+                    </div>
+                </div>
+                
+                <div class="right-column">
+                    <div class="code-section">
+                        <div class="code-title">ИНВАЙТ-КОД ДЛЯ АКТИВАЦИИ</div>
+                        <div class="invite-code">{{invite_code}}</div>
+                        <div class="validity">
+                            Код действует до: {{expiry_date}}
+                        </div>
+                        <button onclick="copyCode()" class="copy-button">📋 Скопировать код</button>
+                    </div>
+                    
+                    <div class="qr-section">
+                        <div class="qr-title">БЫСТРАЯ АКТИВАЦИЯ ЧЕРЕЗ QR-КОД</div>
+                        {% if qr_code_url %}
+                        <div class="qr-code">
+                            <img src="{{qr_code_url}}" alt="QR Code для активации подписки">
+                        </div>
+                        <div class="bot-info">
+                            Бот: @{{bot_username}}
+                        </div>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+            
+            <div class="instructions">
+                <h3>📝 КАК АКТИВИРОВАТЬ ПОДАРОК</h3>
+                <div class="steps">
+                    <div class="step">
+                        <p>Отсканируйте QR-код или перейдите в бота @{{bot_username}}</p>
+                    </div>
+                    <div class="step">
+                        <p>Нажмите на меню «Инвайт-коды 💌»</p>
+                    </div>
+                    <div class="step">
+                        <p>Выберите «🎫 Активировать инвайт-код»</p>
+                    </div>
+                    <div class="step">
+                        <p>Введите код: <strong>{{invite_code}}</strong></p>
+                    </div>
+                    <div class="step">
+                        <p>Подписка активируется автоматически!</p>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="footer">
+                <p>Сертификат №: <span class="certificate-id">CERT-{{certificate_id}}</span></p>
+                <p>Выпущен: {{issue_date}} | Поддержка: @{{support_username}}</p>
+                <button onclick="window.print()" class="print-button">🖨️ Распечатать сертификат</button>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        function copyCode() {
+            const code = '{{invite_code}}';
+            const tempInput = document.createElement('textarea');
+            tempInput.value = code;
+            document.body.appendChild(tempInput);
+            tempInput.select();
+            tempInput.setSelectionRange(0, 99999);
+            
+            try {
+                const successful = document.execCommand('copy');
+                if (successful) {
+                    alert('✅ Код скопирован: ' + code);
+                } else {
+                    alert('❌ Не удалось скопировать код. Скопируйте вручную: ' + code);
+                }
+            } catch (err) {
+                alert('❌ Ошибка копирования. Скопируйте вручную: ' + code);
+            }
+            
+            document.body.removeChild(tempInput);
+        }
+        
+        // Автоматически подстраиваем размер шота для кода на мобильных
+        function adjustCodeFontSize() {
+            const codeElement = document.querySelector('.invite-code');
+            if (window.innerWidth < 768) {
+                codeElement.style.fontSize = '28px';
+                codeElement.style.padding = '15px';
+            } else {
+                codeElement.style.fontSize = '36px';
+                codeElement.style.padding = '20px';
+            }
+        }
+        
+        window.addEventListener('resize', adjustCodeFontSize);
+        window.addEventListener('load', adjustCodeFontSize);
+    </script>
+</body>
+</html>
