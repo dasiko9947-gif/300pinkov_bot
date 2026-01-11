@@ -5,7 +5,7 @@ import string
 from datetime import datetime, timedelta
 import config
 import logging
-
+import pytz
 logger = logging.getLogger(__name__)
 
 # ========== БАЗОВЫЕ ФУНКЦИИ РАБОТЫ С ФАЙЛАМИ ==========
@@ -204,81 +204,71 @@ async def get_todays_tasks(user_data):
     
     logger.info(f"   📊 Всего заданий: {len(tasks)}")
     return tasks  # ВСЕГДА возвращаем список (даже пустой)
-async def can_receive_new_task(user_data):
-    """Проверяет, может ли пользователь получить новое задание"""
-    logger.info(f"🔍 can_receive_new_task: проверяю пользователя")
+# В utils.py добавляем/обновляем функцию:
+async def can_receive_new_task(user_data: dict) -> bool:
+    """
+    Проверяет, может ли пользователь получить новое задание
     
-    # Если пользователь в спринте - всегда может получить задание
-    if user_data.get('sprint_type') and not user_data.get('sprint_completed'):
-        logger.info(f"   ✅ В спринте - может получить задание")
-        return True
-    
-    # ПРОВЕРЯЕМ БЕСПЛАТНЫЙ ПРОБНЫЙ ПЕРИОД (первые 3 дня)
-    if await is_in_trial_period(user_data):
-        created_at_str = user_data.get('created_at')
-        if created_at_str:
+    Возвращает True если:
+    1. У пользователя активная подписка или пробный период
+    2. Задание не было выполнено сегодня
+    3. Пользователь не заблокирован за вчерашнее задание (или прошло 24+ часов)
+    """
+    try:
+        # Проверка подписки
+        has_subscription = await is_subscription_active(user_data)
+        in_trial = await is_in_trial_period(user_data)
+        
+        if not has_subscription and not in_trial:
+            return False
+        
+        # Проверка выполнения задания сегодня
+        task_completed_today = user_data.get('task_completed_today', False)
+        if task_completed_today:
+            return False
+        
+        # 🔥 ПРОВЕРКА БЛОКИРОВКИ: если прошло больше 24 часов - разрешаем
+        needs_to_complete_yesterday = user_data.get('needs_to_complete_yesterday', False)
+        blocked_since_str = user_data.get('blocked_since')
+        
+        if needs_to_complete_yesterday and blocked_since_str:
             try:
-                created_at = datetime.fromisoformat(created_at_str)
-                days_passed = (datetime.now() - created_at).days
+                # Проверяем, сколько времени прошло с момента блокировки
+                blocked_since = datetime.fromisoformat(blocked_since_str)
+                now = datetime.now(blocked_since.tzinfo if blocked_since.tzinfo else pytz.UTC)
                 
-                # В БЕСПЛАТНОМ пробном периоде (первые 3 дня) можно получить 3 задания
-                # НЕ проверяем completed_tasks_in_trial - просто даем доступ на 3 дня
-                if days_passed < 3:
-                    logger.info(f"✅ В БЕСПЛАТНОМ пробном периоде, день {days_passed + 1}")
-                    return True
-                    
+                hours_passed = (now - blocked_since).total_seconds() / 3600
+                
+                # Если прошло меньше 24 часов - не даем новое задание
+                if hours_passed < 24:
+                    return False
+                else:
+                    # Прошло больше 24 часов - сбрасываем флаги автоматически
+                    logger.info(f"🔄 Авто-сброс блокировки (прошло {hours_passed:.1f} часов)")
+                    user_data['needs_to_complete_yesterday'] = False
+                    # Не сохраняем здесь, сохраним позже в send_daily_tasks
             except Exception as e:
-                logger.error(f"❌ Ошибка проверки пробного периода: {e}")
-    
-    # Если задание уже выполнено сегодня - проверяем дату
-    if user_data.get('task_completed_today', False):
-        last_task_sent = user_data.get('last_task_sent')
-        
-        if not last_task_sent:
-            logger.warning(f"⚠️ Противоречие: task_completed_today=True, но last_task_sent=None")
-            return True
-        
-        try:
-            last_date = datetime.fromisoformat(last_task_sent).date()
-            today = datetime.now().date()
-            
-            if last_date < today:
-                logger.info(f"✅ Задание выполнено вчера, можно получить новое")
-                return True
-            else:
-                logger.info(f"⏸️ Задание уже выполнено сегодня")
+                logger.error(f"❌ Ошибка проверки времени блокировки: {e}")
                 return False
-                
-        except Exception as e:
-            logger.error(f"❌ Ошибка проверки даты: {e}")
-            return True
-    
-    # Проверяем платную подписку
-    has_subscription = await is_subscription_active(user_data)
-    
-    logger.info(f"   Подписка активна: {has_subscription}")
-    
-    if not has_subscription:
-        # Если нет подписки и не в БЕСПЛАТНОМ пробном периоде
-        logger.info(f"❌ Нет доступа к заданиям (нет подписки и пробный период закончился)")
+        
+        # Проверка количества заданий в пробном периоде
+        if in_trial:
+            trial_tasks = user_data.get('completed_tasks_in_trial', 0)
+            if trial_tasks >= 3:
+                return False
+        
+        # Проверка спринтов (если есть)
+        in_sprint = user_data.get('sprint_type') and not user_data.get('sprint_completed')
+        if in_sprint:
+            sprint_tasks_completed = user_data.get('sprint_tasks_completed', 0)
+            if sprint_tasks_completed >= 4:
+                return False
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка проверки возможности получения задания: {e}")
         return False
-    
-    # Проверяем, не получал ли уже задание сегодня
-    last_task_sent = user_data.get('last_task_sent')
-    if last_task_sent:
-        try:
-            last_date = datetime.fromisoformat(last_task_sent).date()
-            today = datetime.now().date()
-            
-            if last_date == today:
-                logger.info(f"⏸️ Задание уже отправлено сегодня")
-                return False
-                
-        except Exception as e:
-            logger.error(f"❌ Ошибка проверки даты отправки: {e}")
-    
-    logger.info(f"✅ Может получить задание")
-    return True
 # ========== ФУНКЦИИ ПОДПИСКИ ==========
 
 async def is_subscription_active(user_data):

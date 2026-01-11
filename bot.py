@@ -210,7 +210,65 @@ class ReferralNotifications:
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
+class RankNotifications:
+    """Класс для красивых уведомлений о системе рангов"""
+    
+    @staticmethod
+    async def send_rank_up_notification(bot, user_id: int, old_rank: str, new_rank: str, user_data: dict):
+        """Отправляет красивое уведомление о повышении ранга"""
+        try:
+            # Получаем информацию о рангах
+            old_rank_info = await utils.get_rank_info(old_rank)
+            new_rank_info = await utils.get_rank_info(new_rank)
+            
+            if not old_rank_info or not new_rank_info:
+                return
+            
+            completed_tasks = user_data.get('completed_tasks', 0)
+            
+            # Красивое сообщение с эмодзи
+            message_text = (
+                f"🎉 <b>ПОЗДРАВЛЯЕМ С ПОВЫШЕНИЕМ РАНГА!</b>\n\n"
+                
+                f"🏆 <b>{old_rank_info.get('name', 'Старый ранг')} → {new_rank_info.get('name', 'Новый ранг')}</b>\n\n"
+                
+                f"📊 <b>Твой прогресс:</b>\n"
+                f"• Выполнено заданий: {completed_tasks}/300\n"
+                f"• Новый вызов: {new_rank_info.get('description', '')}\n\n"
+            )
+            
+            # Добавляем привилегии нового ранга
+            privileges = new_rank_info.get('privileges', [])
+            if privileges:
+                message_text += "🎁 <b>Новые привилегии:</b>\n"
+                for i, privilege in enumerate(privileges, 1):
+                    message_text += f"{i}. {privilege}\n"
+                message_text += "\n"
+            
+            # Добавляем мотивацию для следующего ранга
+            next_rank = await utils.get_next_rank_info(new_rank)
+            if next_rank:
+                tasks_needed = next_rank.get('completed_tasks', 0) - completed_tasks
+                message_text += (
+                    f"🎯 <b>До {next_rank.get('name', 'следующего ранга')}:</b> {tasks_needed} заданий\n\n"
+                )
+            
+            # Итоговое поздравление
+            message_text += (
+                f"💪 <b>Так держать! Ты становишься сильнее с каждым днем!</b>\n"
+                f"Продолжай выполнять задания и открывай новые возможности!"
+            )
+            
+            await bot.send_message(
+                chat_id=user_id,
+                text=message_text,
+                parse_mode='HTML'
+            )
+            
+            logger.info(f"✅ Красивое уведомление о ранге отправлено пользователю {user_id}: {old_rank} → {new_rank}")
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка отправки уведомления о ранге: {e}")
 async def safe_edit_message(callback, text, reply_markup=None, parse_mode='HTML'):
 
     """Безопасно редактирует сообщение с обработкой ошибок"""
@@ -310,7 +368,7 @@ is_sending_tasks = False
 
 # В функции send_daily_tasks обновляем логику отправки
 async def send_daily_tasks():
-    """ОПТИМИЗИРОВАННАЯ асинхронная рассылка заданий с этапами"""
+    """ОПТИМИЗИРОВАННАЯ асинхронная рассылка заданий"""
     global is_sending_tasks
     
     if is_sending_tasks:
@@ -328,15 +386,38 @@ async def send_daily_tasks():
             logger.info("👥 Нет пользователей для рассылки")
             return
         
-        # Создаем задачи для асинхронной отправки
+        # 🔥 ПРЕДВАРИТЕЛЬНАЯ ОБРАБОТКА: авто-сброс старых блокировок
+        for user_id_str, user_data in users.items():
+            try:
+                user_id = int(user_id_str)
+                needs_to_complete_yesterday = user_data.get('needs_to_complete_yesterday', False)
+                blocked_since_str = user_data.get('blocked_since')
+                
+                if needs_to_complete_yesterday and blocked_since_str:
+                    try:
+                        blocked_since = datetime.fromisoformat(blocked_since_str)
+                        now = datetime.now(blocked_since.tzinfo if blocked_since.tzinfo else pytz.UTC)
+                        
+                        hours_passed = (now - blocked_since).total_seconds() / 3600
+                        
+                        # Если прошло больше 24 часов - сбрасываем блокировку
+                        if hours_passed >= 24:
+                            user_data['needs_to_complete_yesterday'] = False
+                            logger.info(f"🔄 Авто-сброс блокировки при рассылке для {user_id} ({hours_passed:.1f} часов)")
+                    except Exception as e:
+                        logger.error(f"❌ Ошибка авто-сброса для {user_id}: {e}")
+            except Exception as e:
+                logger.error(f"❌ Ошибка предварительной обработки {user_id_str}: {e}")
+        
+        # Остальной код рассылки без изменений...
         tasks = []
-        batch_size = 50  # Ограничиваем параллельные запросы
+        batch_size = 50
         
         for i, (user_id_str, user_data) in enumerate(users.items()):
             try:
                 user_id = int(user_id_str)
                 
-                # Проверяем доступ к заданиям (быстрая проверка)
+                # Проверяем доступ к заданиям
                 has_subscription = await utils.is_subscription_active(user_data)
                 in_trial = await utils.is_in_trial_period(user_data)
                 in_sprint = user_data.get('sprint_type') and not user_data.get('sprint_completed')
@@ -349,14 +430,14 @@ async def send_daily_tasks():
                     continue
                 
                 # Создаем задачу отправки
-                task = send_task_to_user(user_id, user_data)  # Используем обновленную функцию
+                task = send_task_to_user(user_id, user_data)
                 tasks.append(task)
                 
-                # Отправляем батчами для контроля нагрузки
+                # Отправляем батчами
                 if len(tasks) >= batch_size:
                     await process_batch(tasks, i, total_users)
                     tasks = []
-                    await asyncio.sleep(1)  # Пауза между батчами
+                    await asyncio.sleep(1)
                     
             except Exception as e:
                 logger.error(f"❌ Ошибка подготовки пользователя {user_id_str}: {e}")
@@ -373,9 +454,89 @@ async def send_daily_tasks():
     finally:
         is_sending_tasks = False
 # В функции send_daily_tasks обновим логику отправки обычных заданий:
-
-import asyncio
-from aiogram import exceptions
+async def check_and_auto_skip_expired_blocks():
+    """Проверяет и автоматически пропускает задания, по которым не ответили более 24 часов"""
+    logger.info("⏰ Проверяем просроченные блокировки...")
+    
+    users = await utils.get_all_users()
+    auto_skipped_count = 0
+    
+    default_timezone = pytz.timezone(config.TIMEZONE)
+    now = datetime.now(default_timezone)
+    
+    for user_id_str, user_data in users.items():
+        try:
+            user_id = int(user_id_str)
+            
+            # Пропускаем неактивных
+            has_subscription = await utils.is_subscription_active(user_data)
+            in_trial = await utils.is_in_trial_period(user_data)
+            
+            if not has_subscription and not in_trial:
+                continue
+            
+            needs_to_complete_yesterday = user_data.get('needs_to_complete_yesterday', False)
+            blocked_since_str = user_data.get('blocked_since')
+            
+            if needs_to_complete_yesterday and blocked_since_str:
+                try:
+                    # Получаем часовой пояс пользователя
+                    user_timezone_str = user_data.get('timezone', config.TIMEZONE)
+                    try:
+                        user_timezone = pytz.timezone(user_timezone_str)
+                    except:
+                        user_timezone = default_timezone
+                    
+                    blocked_since_utc = datetime.fromisoformat(blocked_since_str)
+                    if blocked_since_utc.tzinfo is None:
+                        blocked_since_utc = pytz.UTC.localize(blocked_since_utc)
+                    
+                    blocked_since_user = blocked_since_utc.astimezone(user_timezone)
+                    user_now = now.astimezone(user_timezone)
+                    
+                    hours_passed = (user_now - blocked_since_user).total_seconds() / 3600
+                    
+                    # Если прошло от 24 до 48 часов - авто-пропуск
+                    if 24 <= hours_passed < 48:
+                        # Автоматически пропускаем задание
+                        user_data['needs_to_complete_yesterday'] = False
+                        user_data['current_day'] = user_data.get('current_day', 0) + 1
+                        
+                        # Увеличиваем счетчик пробных заданий
+                        if in_trial:
+                            trial_tasks = user_data.get('completed_tasks_in_trial', 0)
+                            user_data['completed_tasks_in_trial'] = trial_tasks + 1
+                            
+                            if trial_tasks + 1 >= 3:
+                                user_data['trial_finished'] = True
+                        
+                        await utils.save_user(user_id, user_data)
+                        auto_skipped_count += 1
+                        
+                        logger.info(f"🔄 Авто-пропуск задания для {user_id} ({hours_passed:.1f} часов)")
+                        
+                        # Отправляем уведомление
+                        try:
+                            message = (
+                                "⏰ <b>Задание автоматически пропущено</b>\n\n"
+                                f"Ты не ответил на предыдущее задание в течение {hours_passed:.0f} часов.\n"
+                                "Мы автоматически отметили его как пропущенное.\n\n"
+                                "📅 <b>Твой прогресс сохранен!</b>\n\n"
+                                "💡 <b>Совет:</b> Отвечай на задания вовремя, чтобы не терять мотивацию!"
+                            )
+                            
+                            await safe_send_message(user_id, message)
+                        except Exception as e:
+                            logger.error(f"❌ Ошибка отправки уведомления авто-пропуска {user_id}: {e}")
+                    
+                except Exception as e:
+                    logger.error(f"❌ Ошибка проверки авто-пропуска для {user_id}: {e}")
+                    
+        except Exception as e:
+            logger.error(f"❌ Ошибка обработки пользователя {user_id_str}: {e}")
+    
+    if auto_skipped_count > 0:
+        logger.info(f"✅ Авто-пропущено заданий: {auto_skipped_count}")
 
 async def send_task_to_user(user_id: int, user_data: dict):
     """Отправляет задание конкретному пользователю"""
@@ -614,12 +775,14 @@ async def send_reminders():
     
     logger.info(f"📊 Напоминания завершены: {sent_count} отправлено, {error_count} ошибок")
 async def check_midnight_reset():
-    """Полуночный сброс и блокировка с разнообразными репликами"""
+    """Полуночный сброс и блокировка - ИСПРАВЛЕННАЯ ВЕРСИЯ с авто-пропуском"""
     logger.info("🕛 Выполняем полуночный сброс...")
     
     users = await utils.get_all_users()
     reset_count = 0
     blocked_count = 0
+    auto_skip_count = 0  # Счетчик авто-пропусков
+    skipped_users = 0
     
     default_timezone = pytz.timezone(config.TIMEZONE)
     now = datetime.now(default_timezone)
@@ -628,31 +791,132 @@ async def check_midnight_reset():
         try:
             user_id = int(user_id_str)
             
+            # Проверяем активность пользователя
+            has_subscription = await utils.is_subscription_active(user_data)
+            in_trial = await utils.is_in_trial_period(user_data)
+            
             # Пропускаем неактивных пользователей
-            if not await utils.is_subscription_active(user_data) and not await utils.is_in_trial_period(user_data):
+            if not has_subscription and not in_trial:
+                skipped_users += 1
                 continue
             
-            # ЕСЛИ ЗАДАНИЕ ВЫПОЛНЕНО СЕГОДНЯ - просто сбрасываем флаг
-            if user_data.get('task_completed_today', False):
-                user_data['task_completed_today'] = False
-                reset_count += 1
-                await utils.save_user(user_id, user_data)
-                logger.debug(f"✅ Сброшен флаг для пользователя {user_id}")
-                continue
-            
-            # Получаем часовой пояс пользователя
-            user_timezone_str = user_data.get('timezone', config.TIMEZONE)
-            try:
-                user_timezone = pytz.timezone(user_timezone_str)
-            except:
-                user_timezone = default_timezone
-            
-            # Получаем время последнего задания
+            # Проверяем флаг "нужно завершить вчерашнее"
+            needs_to_complete_yesterday = user_data.get('needs_to_complete_yesterday', False)
             last_task_sent_str = user_data.get('last_task_sent')
-            if not last_task_sent_str:
-                continue
+            
+            # 🔥 АВТО-ПРОПУСК: Если пользователь не ответил более 24 часов
+            if needs_to_complete_yesterday and last_task_sent_str:
+                try:
+                    # Получаем часовой пояс пользователя
+                    user_timezone_str = user_data.get('timezone', config.TIMEZONE)
+                    try:
+                        user_timezone = pytz.timezone(user_timezone_str)
+                    except:
+                        user_timezone = default_timezone
+                    
+                    # Получаем дату блокировки
+                    blocked_since_str = user_data.get('blocked_since')
+                    if blocked_since_str:
+                        blocked_since_utc = datetime.fromisoformat(blocked_since_str)
+                        if blocked_since_utc.tzinfo is None:
+                            blocked_since_utc = pytz.UTC.localize(blocked_since_utc)
+                        
+                        blocked_since_user = blocked_since_utc.astimezone(user_timezone)
+                        user_now = now.astimezone(user_timezone)
+                        
+                        # Если прошло больше 24 часов с момента блокировки
+                        hours_passed = (user_now - blocked_since_user).total_seconds() / 3600
+                        
+                        if hours_passed >= 24:
+                            # АВТОМАТИЧЕСКИ ПРОПУСКАЕМ задание
+                            user_data['needs_to_complete_yesterday'] = False
+                            user_data['current_day'] = user_data.get('current_day', 0) + 1
+                            
+                            # Увеличиваем счетчик пробных заданий если в пробном периоде
+                            if in_trial:
+                                trial_tasks = user_data.get('completed_tasks_in_trial', 0)
+                                user_data['completed_tasks_in_trial'] = trial_tasks + 1
+                                
+                                if trial_tasks + 1 >= 3:
+                                    user_data['trial_finished'] = True
+                            
+                            await utils.save_user(user_id, user_data)
+                            auto_skip_count += 1
+                            
+                            logger.info(f"🔄 Авто-пропуск задания для пользователя {user_id} (прошло {hours_passed:.1f} часов)")
+                            
+                            # Отправляем уведомление об авто-пропуске
+                            try:
+                                auto_skip_message = (
+                                    "⏰ <b>Автоматический пропуск задания</b>\n\n"
+                                    "Ты не ответил на вчерашнее задание в течение 24 часов.\n"
+                                    "Мы автоматически отметили его как пропущенное.\n\n"
+                                    "💡 <b>Совет:</b> Отвечай на задания вовремя, чтобы не терять прогресс!\n\n"
+                                    "Новое задание придет завтра в 9:00 ⏰"
+                                )
+                                
+                                await safe_send_message(user_id, auto_skip_message)
+                            except Exception as e:
+                                logger.error(f"❌ Ошибка отправки авто-пропуска пользователю {user_id}: {e}")
+                            
+                            continue  # Пропускаем дальнейшую обработку
+                except Exception as e:
+                    logger.error(f"❌ Ошибка проверки авто-пропуска для пользователя {user_id}: {e}")
+            
+            # Обычная логика сброса флага task_completed_today
+            task_completed_today = user_data.get('task_completed_today', False)
+            
+            if task_completed_today:
+                # Проверяем, что задание действительно было сегодня
+                if last_task_sent_str:
+                    try:
+                        last_task_date_utc = datetime.fromisoformat(last_task_sent_str)
+                        
+                        if last_task_date_utc.tzinfo is None:
+                            last_task_date_utc = pytz.UTC.localize(last_task_date_utc)
+                        
+                        # Получаем часовой пояс пользователя
+                        user_timezone_str = user_data.get('timezone', config.TIMEZONE)
+                        try:
+                            user_timezone = pytz.timezone(user_timezone_str)
+                        except:
+                            user_timezone = default_timezone
+                        
+                        last_task_date_user = last_task_date_utc.astimezone(user_timezone)
+                        user_now = now.astimezone(user_timezone)
+                        
+                        # Если задание было отправлено ВЧЕРА или ранее - сбрасываем
+                        if last_task_date_user.date() < user_now.date():
+                            user_data['task_completed_today'] = False
+                            reset_count += 1
+                            await utils.save_user(user_id, user_data)
+                            logger.debug(f"✅ Сброшен флаг для пользователя {user_id} (задание было вчера)")
+                        else:
+                            # Задание было сегодня, не сбрасываем
+                            logger.debug(f"⚠️ Пользователь {user_id} уже выполнил сегодняшнее задание")
+                    except Exception as e:
+                        logger.error(f"❌ Ошибка обработки даты у пользователя {user_id}: {e}")
+                        # В случае ошибки все равно сбрасываем флаг
+                        user_data['task_completed_today'] = False
+                        reset_count += 1
+                        await utils.save_user(user_id, user_data)
+                else:
+                    # Если нет даты последнего задания, сбрасываем флаг
+                    user_data['task_completed_today'] = False
+                    reset_count += 1
+                    await utils.save_user(user_id, user_data)
                 
-            try:
+                continue
+            
+            # Если задание НЕ выполнено сегодня и есть дата последнего задания
+            if last_task_sent_str and not task_completed_today:
+                # Получаем часовой пояс пользователя
+                user_timezone_str = user_data.get('timezone', config.TIMEZONE)
+                try:
+                    user_timezone = pytz.timezone(user_timezone_str)
+                except:
+                    user_timezone = default_timezone
+                
                 last_task_date_utc = datetime.fromisoformat(last_task_sent_str)
                 
                 if last_task_date_utc.tzinfo is None:
@@ -674,17 +938,22 @@ async def check_midnight_reset():
                     
                     full_message = f"{block_message}\n\n{motivation}"
                     
-                    await bot.send_message(chat_id=user_id, text=full_message)
+                    await safe_send_message(
+                        user_id=user_id,
+                        text=full_message
+                    )
                     blocked_count += 1
                     logger.info(f"⏸️ Пользователь {user_id} заблокирован (задание от {last_task_date_only})")
                     
-            except Exception as e:
-                logger.error(f"❌ Ошибка обработки даты у пользователя {user_id}: {e}")
-                
+                    # При блокировке ставим флаг и записываем время блокировки
+                    user_data['needs_to_complete_yesterday'] = True
+                    user_data['blocked_since'] = now.isoformat()  # Запоминаем когда заблокировали
+                    await utils.save_user(user_id, user_data)
+                    
         except Exception as e:
             logger.error(f"❌ Ошибка сброса пользователя {user_id_str}: {e}")
     
-    logger.info(f"📊 Сброс завершен: {reset_count} сброшено, {blocked_count} заблокировано")
+    logger.info(f"📊 Сброс завершен: {reset_count} сброшено, {blocked_count} заблокировано, {auto_skip_count} авто-пропущено, {skipped_users} неактивных")
 @dp.message(Command("reset_me"))
 async def reset_me_command(message: Message, state: FSMContext):
     """Полный сброс прогресса пользователя с очисткой состояний"""
@@ -2002,6 +2271,14 @@ async def task_completed(message: Message):
     if not user_data:
         return
     
+    # 🔥 Сбрасываем флаг блокировки за вчерашнее задание
+    if user_data.get('needs_to_complete_yesterday', False):
+        user_data['needs_to_complete_yesterday'] = False
+        logger.info(f"✅ Сброшен флаг needs_to_complete_yesterday для пользователя {user_id}")
+    
+    # Сохраняем старый ранг для сравнения
+    old_rank = user_data.get('rank', 'putnik')
+    
     # Получаем гендерные окончания
     gender = await utils.get_gender_ending(user_data)
     
@@ -2017,12 +2294,11 @@ async def task_completed(message: Message):
     user_data['completed_tasks'] = user_data.get('completed_tasks', 0) + 1
     user_data['task_completed_today'] = True
     
-    # ⭐⭐⭐ ВАЖНОЕ ИСПРАВЛЕНИЕ: Проверяем пробный период перед увеличением счетчика
+    # Проверяем пробный период
     in_trial = await utils.is_in_trial_period(user_data)
     
     # Если в пробном периоде - увеличиваем счетчик
     if in_trial:
-        # БЕЗОПАСНО получаем счетчик пробных заданий
         trial_tasks = user_data.get('completed_tasks_in_trial', 0)
         new_trial_count = trial_tasks + 1
         
@@ -2036,19 +2312,32 @@ async def task_completed(message: Message):
             user_data['trial_finished'] = True
             logger.info(f"🎯 Пробный период завершен для пользователя {user_id}")
     
-    # Обновляем ранг
+    # Обновляем ранг и получаем результат
     rank_updated = await utils.update_user_rank(user_data)
-    new_rank_name = ""
-    
-    if rank_updated:
-        current_rank = user_data.get('rank', 'putnik')
-        rank_info = await utils.get_rank_info(current_rank)
-        new_rank_name = rank_info.get('name', '')
+    new_rank = user_data.get('rank', 'putnik')
     
     await utils.save_user(user_id, user_data)
     
-    # Получаем случайную реплику
-    reply = await BotReplies.get_task_completed_reply(gender, rank_updated, new_rank_name)
+    # 🔥 ОТПРАВЛЯЕМ КРАСИВОЕ УВЕДОМЛЕНИЕ О РАНГЕ (если ранг изменился)
+    if rank_updated and old_rank != new_rank:
+        # Отправляем красивое уведомление о ранге
+        await RankNotifications.send_rank_up_notification(bot, user_id, old_rank, new_rank, user_data)
+        
+        # Также уведомляем админа
+        try:
+            admin_message = (
+                f"🏆 <b>Пользователь повысил ранг!</b>\n\n"
+                f"👤 {user.first_name} (@{user.username or 'нет'})\n"
+                f"🆔 {user_id}\n"
+                f"📈 {old_rank} → {new_rank}\n"
+                f"✅ Выполнено: {user_data.get('completed_tasks', 0)} заданий"
+            )
+            await bot.send_message(config.ADMIN_ID, admin_message)
+        except Exception as e:
+            logger.error(f"Ошибка уведомления админа о ранге: {e}")
+    
+    # Получаем базовое сообщение о выполнении задания (без упоминания ранга)
+    reply = await BotReplies.get_task_completed_reply(gender, rank_updated, "")
     
     await message.answer(
         reply,
@@ -2103,7 +2392,7 @@ async def task_completed(message: Message):
                 )
                 await bot.send_message(config.ADMIN_ID, admin_message)
             except Exception as e:
-                logger.error(f"Ошибка уведомления админа: {e}")
+                logger.error(f"Ошибка уведомления админа о пробном периоде: {e}")
     
     await utils.update_user_activity(user_id)
 # ОБНОВЛЯЕМ обработчик "Подписка 💎"
@@ -2159,7 +2448,6 @@ async def show_subscription(message: Message):
         await message.answer("❌ Произошла ошибка при загрузке информации о подписке")
 @dp.message(F.text == "⏭️ ПРОПУСТИТЬ")
 async def skip_task(message: Message):
-    """Пропуск задания"""
     user = message.from_user
     if not user:
         return
@@ -2170,6 +2458,11 @@ async def skip_task(message: Message):
     if not user_data:
         await message.answer("❌ Сначала зарегистрируйтесь через /start")
         return
+    
+    # 🔥 Сбрасываем флаг блокировки за вчерашнее задание
+    if user_data.get('needs_to_complete_yesterday', False):
+        user_data['needs_to_complete_yesterday'] = False
+        logger.info(f"✅ Сброшен флаг needs_to_complete_yesterday (пропуск) для пользователя {user_id}")
     
     # Получаем гендерные окончания
     gender = await utils.get_gender_ending(user_data)
@@ -7029,11 +7322,9 @@ async def check_me_command(message: Message):
         debug_info += f"📝 Задание дня: {task.get('day', '?')} - {task.get('text', 'нет текста')[:50]}...\n"
     
     await message.answer(debug_info)
+# В функции main() добавляем:
 async def main():
     logger.info("Бот запускается...")
-    
-    # ТЕСТ: Принудительно запускаем рассылку при старте
-    logger.info("🔄 Принудительный запуск рассылки при старте...")    
     
     # Запускаем планировщик
     scheduler.add_job(
@@ -7044,6 +7335,17 @@ async def main():
             timezone=config.TIMEZONE
         ),
         id="daily_tasks"
+    )
+    
+    # Добавляем проверку просроченных блокировок (каждые 6 часов)
+    scheduler.add_job(
+        check_and_auto_skip_expired_blocks,
+        trigger=CronTrigger(
+            hour="*/6",  # Каждые 6 часов
+            minute=0,
+            timezone=config.TIMEZONE
+        ),
+        id="auto_skip_check"
     )
     
     scheduler.add_job(
