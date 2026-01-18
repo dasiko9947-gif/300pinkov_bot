@@ -1,34 +1,6 @@
-# Файлы Python
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.Python
-
-# Виртуальное окружение
-env/
-venv/
-
-# Файлы окружения (НЕ загружайте файл с токенами и паролями!)
-.env
-*.env
-
-# Логи (папка logs, судя по структуре)
-logs/
-*.log
-
-# Системные файлы
-.DS_Store
-Thumbs.db
-
-# Файлы IDE
-.vscode
-
 users_data.json
 stages.json
 payments_data.json
 invite_codes.json
 bot.log
 .env
-
-.idea/
