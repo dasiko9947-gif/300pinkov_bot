@@ -22,5 +22,13 @@ logs/
 Thumbs.db
 
 # Файлы IDE
-.vscode/
+.vscode
+
+users_data.json
+stages.json
+payments_data.json
+invite_codes.json
+bot.log
+.env
+
 .idea/
