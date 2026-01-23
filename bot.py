@@ -60,6 +60,11 @@ class UserStates(StatesGroup):
     # Состояния для админской обработки выводов
     admin_waiting_withdrawal_action = State()
     admin_waiting_withdrawal_comment = State()
+    # Новые состояния для создания сертификатов
+    admin_waiting_certificate_type = State()
+    admin_waiting_certificate_days = State()
+    admin_waiting_certificate_recipient = State()  # для кого сертификат
+    admin_waiting_certificate_message = State()  # персональное сообщение
 
 class ReferralNotifications:
     """Класс для уведомлений реферальной системы"""
@@ -3412,6 +3417,860 @@ async def back_to_main(callback: CallbackQuery):
     
     await callback.answer()
 
+
+# ========== СЕРТИФИКАТЫ ==========
+
+@dp.message(F.text == "🎁 Создать сертификат")
+async def admin_create_certificate_start(message: Message, state: FSMContext):
+    """Начало создания сертификата - УПРОЩЕННАЯ ВЕРСИЯ"""
+    user = message.from_user
+    if not user or user.id != config.ADMIN_ID:
+        return
+    
+    await message.answer(
+        "🎁 <b>СОЗДАНИЕ СЕРТИФИКАТА</b>\n\n"
+        "Выберите тип сертификата:\n\n"
+        "📅 <b>Месячный (30 дней)</b> - стандартная подписка\n"
+        "📆 <b>Годовой (365 дней)</b> - премиальная подписка\n\n"
+        "Сертификат будет <b>общим</b> - его можно подарить любому пользователю!",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="📅 Месячный (30 дней)", callback_data="certificate_month")],
+                [InlineKeyboardButton(text="📆 Годовой (365 дней)", callback_data="certificate_year")],
+                [InlineKeyboardButton(text="🔙 Отмена", callback_data="certificate_cancel")]
+            ]
+        )
+    )
+    await state.set_state(UserStates.admin_waiting_certificate_type)
+
+@dp.callback_query(UserStates.admin_waiting_certificate_type, F.data.startswith("certificate_"))
+async def admin_certificate_type_selected(callback: CallbackQuery, state: FSMContext):
+    """Обработка выбора типа сертификата - УПРОЩЕННАЯ"""
+    if not callback or not callback.message or not callback.from_user:
+        return
+    
+    user = callback.from_user
+    if user.id != config.ADMIN_ID:
+        try:
+            await callback.answer("⛔ Нет доступа")
+        except:
+            pass
+        return
+    
+    certificate_type = callback.data
+    
+    if certificate_type == "certificate_cancel":
+        try:
+            if callback.message:
+                await callback.message.edit_text("❌ Создание сертификата отменено")
+        except:
+            try:
+                if callback.message:
+                    await callback.message.answer("❌ Создание сертификата отменено")
+            except:
+                pass
+        await state.clear()
+        try:
+            await callback.answer()
+        except:
+            pass
+        return
+    
+    # Определяем параметры
+    if certificate_type == "certificate_month":
+        days = 30
+        certificate_name = "📅 Месячный сертификат"
+        code_type = "certificate_month"
+    elif certificate_type == "certificate_year":
+        days = 365
+        certificate_name = "📆 Годовой сертификат"
+        code_type = "certificate_year"
+    else:
+        days = 30
+        certificate_name = "Сертификат"
+        code_type = "certificate_month"
+    
+    # Сразу создаем сертификат
+    await create_simple_certificate(
+        callback=callback,
+        state=state,
+        certificate_name=certificate_name,
+        days=days,
+        code_type=code_type,
+        admin_id=user.id,
+        admin_name=user.first_name or "Администратор"
+    )
+async def create_simple_certificate(callback: CallbackQuery, state: FSMContext, 
+                                   certificate_name: str, days: int, 
+                                   code_type: str, admin_id: int, admin_name: str):
+    """Создание простого сертификата (общего)"""
+    try:
+        # Проверяем что callback и message существуют
+        if not callback or not callback.message:
+            return
+        
+        # Создаем инвайт-код для сертификата
+        invite_code = await utils.create_invite_code(
+            code_type=code_type,
+            days=days,
+            max_uses=1,
+            created_by=admin_id,
+            is_gift=True,
+            extra_data={
+                "is_certificate": True,
+                "certificate_name": certificate_name,
+                "certificate_days": days,
+                "created_by_admin": True,
+                "admin_id": admin_id,
+                "created_at": datetime.now().isoformat(),
+                "recipient_info": "Общий сертификат (можно подарить любому)",
+                "is_active": True
+            }
+        )
+        
+        if not invite_code:
+            try:
+                await callback.message.edit_text(
+                    "❌ <b>ОШИБКА СОЗДАНИЯ СЕРТИФИКАТА</b>\n\n"
+                    "Не удалось создать инвайт-код. Попробуйте снова."
+                )
+            except:
+                await callback.message.answer(
+                    "❌ <b>ОШИБКА СОЗДАНИЯ СЕРТИФИКАТА</b>\n\n"
+                    "Не удалось создать инвайт-код. Попробуйте снова."
+                )
+            await state.clear()
+            try:
+                await callback.answer()
+            except:
+                pass
+            return
+        
+        # Формируем сообщение с результатом
+        result_message = (
+            f"✅ <b>СЕРТИФИКАТ СОЗДАН!</b>\n\n"
+            f"🎁 <b>Тип:</b> {certificate_name}\n"
+            f"⏰ <b>Срок:</b> {days} дней\n"
+            f"👤 <b>Для кого:</b> Общий сертификат (можно подарить любому)\n"
+            f"🎫 <b>Код активации:</b>\n"
+            f"<code>{invite_code}</code>\n\n"
+            f"📋 <b>ИНСТРУКЦИЯ:</b>\n"
+            f"1. Отправьте код любому человеку\n"
+            f"2. Он должен зайти в раздел «Сертификаты 🎁»\n"
+            f"3. Нажать «🎫 Активировать инвайт-код»\n"
+            f"4. Ввести код и активировать подписку\n\n"
+            f"⏰ <b>Сертификат действует 90 дней</b>\n"
+            f"👤 <b>Создал:</b> {admin_name}"
+        )
+        
+        # Пытаемся создать файл сертификата
+        file_created = False
+        try:
+            from certificates.spartan_generator import spartan_certificate_generator
+            
+            # Данные для сертификата
+            certificate_data = {
+                'invite_code': invite_code,
+                'tariff_data': {
+                    'name': certificate_name,
+                    'days': days,
+                    'price': 0
+                },
+                'buyer_data': {
+                    'first_name': admin_name,
+                    'username': callback.from_user.username if callback.from_user else None,
+                    'user_id': admin_id
+                },
+                'recipient_info': "Общий сертификат",
+                'created_at': datetime.now().strftime("%d.%m.%Y")
+            }
+            
+            # Генерируем HTML контент
+            html_content = spartan_certificate_generator.generate_certificate(
+                invite_code=invite_code,
+                tariff_data=certificate_data['tariff_data'],
+                buyer_data=certificate_data['buyer_data'],
+                config=config
+            )
+            
+            # Сохраняем файл
+            filepath = spartan_certificate_generator.save_certificate(f"cert_{invite_code}", html_content)
+            
+            # Отправляем файл
+            from aiogram.types import FSInputFile
+            certificate_file = FSInputFile(filepath)
+            
+            # Отправляем файл отдельным сообщением
+            await callback.message.answer_document(
+                certificate_file,
+                caption=f"📄 <b>Файл сертификата</b>\nКод: <code>{invite_code}</code>"
+            )
+            
+            result_message += f"\n\n📄 <b>Файл сертификата отправлен отдельным сообщением</b>"
+            file_created = True
+            
+            # Удаляем временный файл
+            await asyncio.sleep(30)
+            try:
+                import os
+                os.remove(filepath)
+                logger.info(f"🗑️ Временный файл удален: {filepath}")
+            except Exception as delete_error:
+                logger.error(f"Ошибка удаления файла: {delete_error}")
+                
+        except ImportError:
+            logger.warning("Модуль генерации сертификатов не найден")
+            result_message += f"\n\n⚠️ <i>Файл сертификата не создан (модуль не найден)</i>"
+        except Exception as cert_error:
+            logger.error(f"Ошибка создания файла сертификата: {cert_error}")
+            result_message += f"\n\n⚠️ <i>Файл сертификата не создан (ошибка)</i>"
+        
+        # Отправляем результат
+        try:
+            await callback.message.edit_text(result_message, parse_mode="HTML")
+        except:
+            try:
+                await callback.message.answer(result_message, parse_mode="HTML")
+            except Exception as e:
+                logger.error(f"Ошибка отправки результата: {e}")
+        
+        # Логируем создание
+        logger.info(f"🎁 Сертификат создан: {certificate_name}, код: {invite_code}, дней: {days}, файл: {'да' if file_created else 'нет'}")
+        
+        # Очищаем состояние
+        await state.clear()
+        
+        try:
+            await callback.answer("✅ Сертификат создан!")
+        except:
+            pass
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка создания сертификата: {e}", exc_info=True)
+        
+        error_message = (
+            f"❌ <b>ОШИБКА СОЗДАНИЯ СЕРТИФИКАТА</b>\n\n"
+            f"Произошла ошибка:\n<code>{str(e)[:200]}</code>"
+        )
+        
+        try:
+            if callback and callback.message:
+                await callback.message.edit_text(error_message, parse_mode="HTML")
+        except:
+            try:
+                if callback and callback.message:
+                    await callback.message.answer(error_message, parse_mode="HTML")
+            except:
+                pass
+        
+        await state.clear()
+        try:
+            if callback:
+                await callback.answer("❌ Ошибка")
+        except:
+            pass
+@dp.callback_query(UserStates.admin_waiting_certificate_recipient, F.data == "certificate_general")
+async def admin_certificate_general_selected(callback: CallbackQuery, state: FSMContext):
+    """Выбран общий сертификат"""
+    if not callback or not callback.message:
+        return
+    
+    user = callback.from_user
+    if not user or user.id != config.ADMIN_ID:
+        try:
+            await callback.answer("⛔ Нет доступа")
+        except:
+            pass
+        return
+    
+    # Сохраняем информацию о получателе как общий сертификат
+    await state.update_data(
+        recipient_type="general",
+        recipient_id=None,
+        recipient_username=None,
+        recipient_name="Общий сертификат",
+        recipient_info="Общий сертификат (можно подарить любому)"
+    )
+    
+    # Спрашиваем персональное сообщение
+    try:
+        # Получаем данные из состояния
+        state_data = await state.get_data()
+        certificate_name = state_data.get('certificate_name', 'Сертификат')
+        days = state_data.get('certificate_days', 30)
+        
+        await callback.message.edit_text(
+            f"✍️ <b>ДОБАВИТЬ ПЕРСОНАЛЬНОЕ СООБЩЕНИЕ?</b>\n\n"
+            f"🎯 Тип: Общий сертификат\n"
+            f"📅 Название: {certificate_name}\n"
+            f"⏰ Срок: {days} дней\n\n"
+            "📝 <b>Введите персональное сообщение для получателя:</b>\n"
+            "<i>Это сообщение будет добавлено к сертификату.\n"
+            "Нажмите 'Пропустить' если сообщение не нужно.</i>",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="⏭️ Пропустить сообщение", callback_data="certificate_skip_message")]
+                ]
+            )
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при редактировании сообщения: {e}")
+        try:
+            await callback.message.answer(
+                "✍️ <b>ДОБАВИТЬ ПЕРСОНАЛЬНОЕ СООБЩЕНИЕ?</b>\n\n"
+                "📝 <b>Введите персональное сообщение:</b>\n"
+                "<i>Нажмите 'Пропустить' если не нужно</i>",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [InlineKeyboardButton(text="⏭️ Пропустить сообщение", callback_data="certificate_skip_message")]
+                    ]
+                )
+            )
+        except Exception as e2:
+            logger.error(f"Ошибка при отправке сообщения: {e2}")
+    
+    await state.set_state(UserStates.admin_waiting_certificate_message)
+    
+    try:
+        await callback.answer("✅ Выбран общий сертификат")
+    except:
+        pass
+
+@dp.callback_query(UserStates.admin_waiting_certificate_recipient, F.data == "certificate_back_to_type")
+async def admin_certificate_back_to_type(callback: CallbackQuery, state: FSMContext):
+    """Возврат к выбору типа сертификата"""
+    if not callback or not callback.message:
+        return
+    
+    user = callback.from_user
+    if not user or user.id != config.ADMIN_ID:
+        try:
+            await callback.answer("⛔ Нет доступа")
+        except:
+            pass
+        return
+    
+    # Возвращаемся к выбору типа сертификата
+    try:
+        await callback.message.edit_text(
+            "🎁 <b>СОЗДАНИЕ СЕРТИФИКАТА</b>\n\n"
+            "Выберите тип сертификата:\n\n"
+            "📅 <b>Месячный (30 дней)</b> - стандартная подписка\n"
+            "📆 <b>Годовой (365 дней)</b> - премиальная подписка\n\n"
+            "Выберите вариант:",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="📅 Месячный (30 дней)", callback_data="certificate_month")],
+                    [InlineKeyboardButton(text="📆 Годовой (365 дней)", callback_data="certificate_year")],
+                    [InlineKeyboardButton(text="🔙 Отмена", callback_data="certificate_cancel")]
+                ]
+            )
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при редактировании сообщения: {e}")
+        try:
+            await callback.message.answer(
+                "🎁 <b>СОЗДАНИЕ СЕРТИФИКАТА</b>\n\n"
+                "Выберите тип сертификата:\n\n"
+                "📅 <b>Месячный (30 дней)</b> - стандартная подписка\n"
+                "📆 <b>Годовой (365 дней)</b> - премиальная подписка\n\n"
+                "Выберите вариант:",
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [InlineKeyboardButton(text="📅 Месячный (30 дней)", callback_data="certificate_month")],
+                        [InlineKeyboardButton(text="📆 Годовой (365 дней)", callback_data="certificate_year")],
+                        [InlineKeyboardButton(text="🔙 Отмена", callback_data="certificate_cancel")]
+                    ]
+                )
+            )
+        except Exception as e2:
+            logger.error(f"Ошибка при отправке сообщения: {e2}")
+    
+    await state.set_state(UserStates.admin_waiting_certificate_type)
+    
+    try:
+        await callback.answer()
+    except:
+        pass
+@dp.message(UserStates.admin_waiting_certificate_recipient)
+async def admin_certificate_recipient_received(message: Message, state: FSMContext):
+    """Получение информации о получателе сертификата"""
+    if not message or not message.from_user:
+        return
+    
+    if message.from_user.id != config.ADMIN_ID:
+        return
+    
+    if not message.text:
+        await message.answer(
+            "❌ Введите ID пользователя или username:",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="🎫 Создать общий сертификат", callback_data="certificate_general")],
+                    [InlineKeyboardButton(text="🔙 Назад", callback_data="certificate_back_to_type")]
+                ]
+            )
+        )
+        return
+    
+    recipient_text = message.text.strip()
+    
+    if not recipient_text:
+        await message.answer(
+            "❌ Введите ID пользователя или username:",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="🎫 Создать общий сертификат", callback_data="certificate_general")],
+                    [InlineKeyboardButton(text="🔙 Назад", callback_data="certificate_back_to_type")]
+                ]
+            )
+        )
+        return
+    
+    # Получаем данные из состояния
+    state_data = await state.get_data()
+    days = state_data.get('certificate_days', 30)
+    certificate_name = state_data.get('certificate_name', 'Сертификат')
+    
+    # Определяем тип получателя
+    recipient_id = None
+    recipient_username = None
+    recipient_name = ""
+    
+    if recipient_text.lower() == "общий":
+        # Обработка текстового ввода "общий"
+        recipient_type = "general"
+        recipient_name = "Общий сертификат"
+        recipient_info = "Общий сертификат (можно подарить любому)"
+    
+    elif recipient_text.isdigit():
+        # ID пользователя
+        try:
+            recipient_id = int(recipient_text)
+            # Проверяем, существует ли пользователь
+            user_data = await utils.get_user(recipient_id)
+            if user_data:
+                recipient_name = user_data.get('first_name', 'Пользователь')
+                recipient_type = "specific_user"
+                recipient_info = f"👤 Для пользователя: {recipient_name} (ID: {recipient_id})"
+            else:
+                await message.answer(
+                    f"❌ Пользователь с ID {recipient_id} не найден.\n"
+                    f"Проверьте ID или создайте общий сертификат.",
+                    reply_markup=InlineKeyboardMarkup(
+                        inline_keyboard=[
+                            [InlineKeyboardButton(text="🎫 Создать общий сертификат", callback_data="certificate_general")],
+                            [InlineKeyboardButton(text="🔙 Назад", callback_data="certificate_back_to_type")]
+                        ]
+                    )
+                )
+                return
+        except Exception as e:
+            logger.error(f"Ошибка при поиске пользователя: {e}")
+            await message.answer(
+                f"❌ Ошибка при поиске пользователя.\n"
+                f"Проверьте ID или создайте общий сертификат.",
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [InlineKeyboardButton(text="🎫 Создать общий сертификат", callback_data="certificate_general")],
+                        [InlineKeyboardButton(text="🔙 Назад", callback_data="certificate_back_to_type")]
+                    ]
+                )
+            )
+            return
+    
+    elif recipient_text.startswith("@"):
+        # Username
+        recipient_username = recipient_text[1:]  # Убираем @
+        recipient_type = "by_username"
+        recipient_name = f"@{recipient_username}"
+        recipient_info = f"👤 Для пользователя: @{recipient_username}"
+        
+        # Показываем предупреждение
+        await message.answer(
+            f"⚠️ <b>Поиск по username</b>\n\n"
+            f"Вы указали username: @{recipient_username}\n\n"
+            f"📌 <b>Рекомендация:</b>\n"
+            f"• Сертификат будет создан, но активировать его сможет только пользователь с таким username\n"
+            f"• Лучше узнать ID пользователя через команду /find_user\n\n"
+            f"✅ <b>Продолжить с username?</b>",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(text="✅ Продолжить", callback_data=f"certificate_confirm_username_{recipient_username}"),
+                        InlineKeyboardButton(text="🔙 Отмена", callback_data="certificate_back_to_recipient")
+                    ]
+                ]
+            )
+        )
+        return
+    
+    else:
+        # Неизвестный формат
+        await message.answer(
+            "❌ <b>Неверный формат</b>\n\n"
+            "Введите:\n"
+            "• ID пользователя (только цифры)\n"
+            "• @username (например: @ivanov)\n"
+            "• Или нажмите кнопку для общего сертификата",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="🎫 Создать общий сертификат", callback_data="certificate_general")],
+                    [InlineKeyboardButton(text="🔙 Назад", callback_data="certificate_back_to_type")]
+                ]
+            )
+        )
+        return
+    
+    # Сохраняем информацию о получателе
+    await state.update_data(
+        recipient_type=recipient_type,
+        recipient_id=recipient_id,
+        recipient_username=recipient_username,
+        recipient_name=recipient_name,
+        recipient_info=recipient_info
+    )
+    
+    # Спрашиваем персональное сообщение
+    await message.answer(
+        f"✍️ <b>ДОБАВИТЬ ПЕРСОНАЛЬНОЕ СООБЩЕНИЕ?</b>\n\n"
+        f"{recipient_info}\n"
+        f"📅 Тип: {certificate_name}\n"
+        f"⏰ Срок: {days} дней\n\n"
+        "📝 <b>Введите персональное сообщение для получателя:</b>\n"
+        "<i>Это сообщение будет добавлено к сертификату.\n"
+        "Нажмите 'Пропустить' если сообщение не нужно.</i>",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="⏭️ Пропустить сообщение", callback_data="certificate_skip_message")]
+            ]
+        )
+    )
+    
+    await state.set_state(UserStates.admin_waiting_certificate_message)
+
+@dp.message(UserStates.admin_waiting_certificate_message)
+async def admin_certificate_message_received(message: Message, state: FSMContext):
+    """Получение персонального сообщения"""
+    if not message or not message.from_user:
+        return
+    
+    if message.from_user.id != config.ADMIN_ID:
+        return
+    
+    personal_message = message.text.strip() if message.text else ""
+    
+    # Сохраняем сообщение
+    await state.update_data(personal_message=personal_message)
+    
+    # Создаем сертификат
+    await create_certificate_final(message, state)
+
+async def create_certificate_final(update, state: FSMContext):
+    """Финальное создание сертификата"""
+    try:
+        # Получаем данные из состояния
+        state_data = await state.get_data()
+        
+        certificate_type = state_data.get('certificate_type', 'certificate_month')
+        days = state_data.get('certificate_days', 30)
+        certificate_name = state_data.get('certificate_name', 'Сертификат')
+        recipient_type = state_data.get('recipient_type', 'general')
+        recipient_id = state_data.get('recipient_id')
+        recipient_name = state_data.get('recipient_name', 'Получатель')
+        recipient_info = state_data.get('recipient_info', '')
+        personal_message = state_data.get('personal_message', '')
+        
+        # Создаем инвайт-код для сертификата
+        code_type = f"certificate_{certificate_type}"
+        
+        # Определяем дополнительные параметры
+        extra_data = {
+            "is_certificate": True,
+            "certificate_name": certificate_name,
+            "certificate_days": days,
+            "created_by_admin": True,
+            "admin_id": update.from_user.id if hasattr(update, 'from_user') else config.ADMIN_ID,
+            "created_at": datetime.now().isoformat(),
+            "recipient_info": recipient_info,
+            "personal_message": personal_message if personal_message else None
+        }
+        
+        # Если для конкретного пользователя, добавляем его ID
+        if recipient_type == "specific_user" and recipient_id:
+            extra_data["recipient_user_id"] = recipient_id
+            extra_data["max_uses"] = 1
+        
+        # Создаем инвайт-код (будет использоваться как код активации сертификата)
+        invite_code = await utils.create_invite_code(
+            code_type=code_type,
+            days=days,
+            max_uses=1,  # Сертификат можно использовать только 1 раз
+            created_by=update.from_user.id if hasattr(update, 'from_user') else config.ADMIN_ID,
+            extra_data=extra_data  # Добавляем дополнительные данные
+        )
+        
+        if not invite_code:
+            raise Exception("Не удалось создать инвайт-код для сертификата")
+        
+        # Формируем сообщение с результатом
+        admin_name = update.from_user.first_name if hasattr(update, 'from_user') and update.from_user else "Администратор"
+        
+        result_message = (
+            f"✅ <b>СЕРТИФИКАТ СОЗДАН!</b>\n\n"
+            f"🎁 <b>Тип:</b> {certificate_name}\n"
+            f"⏰ <b>Срок:</b> {days} дней\n"
+            f"🎫 <b>Код активации:</b>\n"
+            f"<code>{invite_code}</code>\n\n"
+        )
+        
+        # Добавляем информацию о получателе
+        result_message += f"👤 <b>Для:</b> {recipient_info}\n\n"
+        
+        if personal_message:
+            result_message += f"📝 <b>Персональное сообщение:</b>\n{personal_message}\n\n"
+        
+        # Инструкции по использованию
+        result_message += (
+            f"📋 <b>ИНСТРУКЦИЯ:</b>\n"
+        )
+        
+        if recipient_type == "specific_user" and recipient_id:
+            # Если для конкретного пользователя
+            result_message += (
+                f"1. Отправьте код пользователю {recipient_name}\n"
+                f"2. Он должен зайти в раздел «Сертификаты 🎁»\n"
+                f"3. Нажать «🎫 Активировать инвайт-код»\n"
+                f"4. Ввести код и активировать подписку\n\n"
+            )
+        else:
+            # Общий сертификат
+            result_message += (
+                f"1. Отправьте код любому человеку\n"
+                f"2. Он должен зайти в раздел «Сертификаты 🎁»\n"
+                f"3. Нажать «🎫 Активировать инвайт-код»\n"
+                f"4. Ввести код и активировать подписку\n\n"
+            )
+        
+        result_message += f"⏰ <b>Сертификат действует 90 дней</b>\n"
+        result_message += f"👤 <b>Создал:</b> {admin_name}"
+        
+        # Если нужно создать файл сертификата (HTML)
+        try:
+            from certificates.spartan_generator import spartan_certificate_generator
+            
+            # Данные для сертификата
+            certificate_data = {
+                'invite_code': invite_code,
+                'tariff_data': {
+                    'name': certificate_name,
+                    'days': days,
+                    'price': 0  # Сертификат бесплатный
+                },
+                'buyer_data': {
+                    'first_name': admin_name,
+                    'username': update.from_user.username if hasattr(update, 'from_user') and update.from_user else None,
+                    'user_id': update.from_user.id if hasattr(update, 'from_user') and update.from_user else 0
+                },
+                'recipient_info': recipient_info,
+                'personal_message': personal_message,
+                'created_at': datetime.now().strftime("%d.%m.%Y")
+            }
+            
+            # Генерируем HTML контент
+            html_content = spartan_certificate_generator.generate_certificate(
+                invite_code=invite_code,
+                tariff_data=certificate_data['tariff_data'],
+                buyer_data=certificate_data['buyer_data'],
+                config=config
+            )
+            
+            # Сохраняем файл
+            filepath = spartan_certificate_generator.save_certificate(f"cert_{invite_code}", html_content)
+            
+            # Отправляем файл администратору
+            from aiogram.types import FSInputFile
+            certificate_file = FSInputFile(filepath)
+            
+            # Отправляем отдельное сообщение с файлом
+            if isinstance(update, Message):
+                await update.answer_document(
+                    certificate_file,
+                    caption=f"📄 Файл сертификата для кода: {invite_code}"
+                )
+            elif isinstance(update, CallbackQuery) and update.message:
+                await update.message.answer_document(
+                    certificate_file,
+                    caption=f"📄 Файл сертификата для кода: {invite_code}"
+                )
+            
+            # Удаляем временный файл через 60 секунд
+            await asyncio.sleep(60)
+            try:
+                import os
+                os.remove(filepath)
+                logger.info(f"🗑️ Временный файл удален: {filepath}")
+            except Exception as delete_error:
+                logger.error(f"Ошибка удаления файла {filepath}: {delete_error}")
+                
+            result_message += f"\n\n📄 <b>Файл сертификата отправлен отдельным сообщением</b>"
+            
+        except ImportError:
+            logger.warning("Модуль генерации сертификатов не найден, отправляем только код")
+        except Exception as cert_error:
+            logger.error(f"Ошибка создания файла сертификата: {cert_error}")
+            result_message += f"\n\n⚠️ <i>Файл сертификата не создан (ошибка: {str(cert_error)[:50]}...)</i>"
+        
+        # Отправляем результат
+        if isinstance(update, Message):
+            await update.answer(result_message, parse_mode="HTML")
+        elif isinstance(update, CallbackQuery) and update.message:
+            try:
+                await update.message.edit_text(result_message, parse_mode="HTML")
+            except:
+                await update.message.answer(result_message, parse_mode="HTML")
+        
+        # Логируем создание
+        logger.info(f"🎁 Сертификат создан: {certificate_name}, код: {invite_code}")
+        
+        # Очищаем состояние
+        await state.clear()
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка создания сертификата: {e}", exc_info=True)
+        
+        error_message = (
+            f"❌ <b>ОШИБКА СОЗДАНИЯ СЕРТИФИКАТА</b>\n\n"
+            f"Произошла ошибка: {str(e)[:100]}...\n\n"
+            f"Попробуйте снова или обратитесь к разработчику."
+        )
+        
+        if isinstance(update, Message):
+            await update.answer(error_message, parse_mode="HTML")
+        elif isinstance(update, CallbackQuery) and update.message:
+            try:
+                await update.message.edit_text(error_message, parse_mode="HTML")
+            except:
+                await update.message.answer(error_message, parse_mode="HTML")
+        
+        await state.clear()
+
+@dp.message(F.text == "📋 Мои сертификаты")
+async def admin_view_certificates(message: Message):
+    """Просмотр созданных сертификатов"""
+    user = message.from_user
+    if not user or user.id != config.ADMIN_ID:
+        return
+    
+    try:
+        # Получаем все инвайт-коды
+        invites = await utils.read_json(config.INVITE_CODES_FILE)
+        
+        if not invites or not isinstance(invites, dict):
+            await message.answer("📭 Нет созданных сертификатов")
+            return
+        
+        # Фильтруем только сертификаты
+        certificates = {}
+        for code, data in invites.items():
+            if isinstance(data, dict) and data.get('is_certificate'):
+                certificates[code] = data
+        
+        if not certificates:
+            await message.answer("📭 Нет созданных сертификатов")
+            return
+        
+        # Группируем по статусу
+        active_certs = []
+        used_certs = []
+        expired_certs = []
+        
+        for code, cert_data in certificates.items():
+            is_active = cert_data.get('is_active', True)
+            used_count = cert_data.get('used_count', 0)
+            max_uses = cert_data.get('max_uses', 1)
+            expires_at = cert_data.get('expires_at')
+            
+            # Проверяем срок действия
+            is_expired = False
+            if expires_at:
+                try:
+                    expiry_date = datetime.fromisoformat(expires_at)
+                    if datetime.now() > expiry_date:
+                        is_expired = True
+                except:
+                    pass
+            
+            if is_expired:
+                expired_certs.append((code, cert_data))
+            elif used_count >= max_uses:
+                used_certs.append((code, cert_data))
+            elif is_active:
+                active_certs.append((code, cert_data))
+        
+        # Формируем сообщение
+        message_text = "📋 <b>СОЗДАННЫЕ СЕРТИФИКАТЫ</b>\n\n"
+        
+        if active_certs:
+            message_text += f"🟢 <b>Активные:</b> {len(active_certs)}\n"
+            for i, (code, cert_data) in enumerate(active_certs[:3], 1):
+                name = cert_data.get('certificate_name', 'Сертификат')
+                days = cert_data.get('certificate_days', 30)
+                recipient = cert_data.get('recipient_info', 'Общий')
+                message_text += f"{i}. {name} ({days}д) - {code[:8]}...\n"
+            
+            if len(active_certs) > 3:
+                message_text += f"... и еще {len(active_certs) - 3}\n"
+            message_text += "\n"
+        
+        if used_certs:
+            message_text += f"🔴 <b>Использованные:</b> {len(used_certs)}\n"
+        
+        if expired_certs:
+            message_text += f"⏰ <b>Просроченные:</b> {len(expired_certs)}\n"
+        
+        message_text += f"\n📊 <b>Всего:</b> {len(certificates)} сертификатов"
+        
+        # Кнопки для управления
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="🎁 Создать новый", callback_data="admin_create_certificate")],
+                [InlineKeyboardButton(text="📊 Детальная статистика", callback_data="admin_certificates_stats")],
+                [InlineKeyboardButton(text="🔙 Назад в админку", callback_data="admin_back")]
+            ]
+        )
+        
+        await message.answer(message_text, reply_markup=keyboard, parse_mode="HTML")
+        
+    except Exception as e:
+        logger.error(f"Ошибка при просмотре сертификатов: {e}")
+        await message.answer(
+            f"❌ Ошибка при загрузке сертификатов: {str(e)[:100]}..."
+        )
+ 
+@dp.callback_query(F.data == "admin_create_certificate")
+async def admin_create_certificate_callback(callback: CallbackQuery, state: FSMContext):
+    """Создание сертификата из callback"""
+    user = callback.from_user
+    if not user or user.id != config.ADMIN_ID:
+        try:
+            await callback.answer("⛔ Нет доступа")
+        except:
+            pass
+        return
+    
+    # Вызываем функцию начала создания сертификата
+    await admin_create_certificate_start(callback.message, state)
+    
+    try:
+        await callback.answer()
+    except:
+        pass       
 # ========== ВЫВОД СРЕДСТВ ==========
 
 @dp.message(F.text == "💰 Вывод средств")

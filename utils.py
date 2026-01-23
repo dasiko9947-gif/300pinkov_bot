@@ -1,11 +1,15 @@
+import database
 import json
 import aiofiles
 import random
 import string
 from datetime import datetime, timedelta
 import config
-import logging
 import pytz
+import uuid
+import logging
+import os
+from typing import Optional, Dict, Any  # Добавить в начале файла
 logger = logging.getLogger(__name__)
 
 # ========== БАЗОВЫЕ ФУНКЦИИ РАБОТЫ С ФАЙЛАМИ ==========
@@ -1120,113 +1124,163 @@ async def generate_invite_code(length=8):
     return ''.join(random.choice(string.digits) for _ in range(length))
 
 # В utils.py, обновить функцию create_invite_code:
-async def create_invite_code(code_type="month", days=None, max_uses=1, created_by=None, pair_owner=None, is_gift=False):
-    """Создает инвайт-код с поддержкой подарков"""
-    invite_codes = await read_json(config.INVITE_CODES_FILE)
-    
-    while True:
-        code = await generate_invite_code()
-        if code not in invite_codes:
-            break
-    
-    if days is None:
-        if code_type == "gift_subscription":
-            # Для подарков берем дни из переданного параметра
-            days = days if days else 30
-        else:
-            days = config.INVITE_CODE_TYPES.get(code_type, {}).get('days', 30)
-    
-    # Определяем имя в зависимости от типа
-    if is_gift:
-        if days == 30:
-            name = "🎁 Подарочная подписка на 1 месяц"
-        elif days == 365:
-            name = "🎁 Подарочная подписка на 1 год"
-        else:
-            name = f"🎁 Подарочная подписка на {days} дней"
-    else:
-        name = config.INVITE_CODE_TYPES.get(code_type, {}).get('name', 'Подписка')
-    
-    invite_data = {
-        'code': code,
-        'type': code_type,
-        'days': days,
-        'max_uses': max_uses,
-        'used_count': 0,
-        'created_by': created_by,
-        'created_at': datetime.now().isoformat(),
-        'used_by': [],
-        'is_active': True,
-        'is_gift': is_gift,  # Добавляем флаг подарка
-        'name': name,
-        'expires_at': (datetime.now() + timedelta(days=30)).isoformat()
-    }
-    
-    # ТОЛЬКО для парных подписок
-    if pair_owner is not None:
-        invite_data['pair_owner'] = pair_owner
-        invite_data['pair_owner_activated'] = True
-    
-    invite_codes[code] = invite_data
-    await write_json(config.INVITE_CODES_FILE, invite_codes)
-    
-    logger.info(f"✅ Создан инвайт-код: {code}, тип: {code_type}, подарок: {is_gift}")
-    return code
 
-async def use_invite_code(code, user_id):
-    """Активация инвайт-кода"""
-    invite_codes = await read_json(config.INVITE_CODES_FILE)
-    
-    # Нормализуем код
-    code = str(code).strip().upper()
-    
-    if code not in invite_codes:
-        return False, "❌ Код не найден"
-    
-    invite = invite_codes[code]
-    
-    # Проверяем активность кода
-    if not invite.get('is_active', True):
-        return False, "❌ Код неактивен"
-    
-    # Проверяем срок действия
+
+async def create_invite_code(
+    code_type: str,
+    days: int = 30,
+    max_uses: int = 1,
+    created_by: Optional[int] = None,
+    is_gift: bool = False,
+    pair_owner: Optional[int] = None,
+    extra_data: Optional[Dict[str, Any]] = None
+) -> Optional[str]:
+    """Создание инвайт-кода с дополнительными данными - ИСПРАВЛЕННАЯ"""
     try:
-        expires_at = datetime.fromisoformat(invite.get('expires_at', ''))
-        if datetime.now() > expires_at:
-            invite['is_active'] = False
-            await write_json(config.INVITE_CODES_FILE, invite_codes)
-            return False, "❌ Срок действия кода истек"
-    except:
-        pass
-    
-    # Проверяем использование
-    used_by = invite.get('used_by', [])
-    
-    # Проверяем, использовал ли пользователь уже этот код
-    if str(user_id) in [str(uid) for uid in used_by]:
-        return False, "❌ Вы уже использовали этот код"
-    
-    # Проверяем лимит использований
-    if invite['used_count'] >= invite['max_uses']:
-        invite['is_active'] = False
-        await write_json(config.INVITE_CODES_FILE, invite_codes)
-        return False, "❌ Код уже использован"
-    
-    # Активируем код
-    invite['used_count'] += 1
-    if 'used_by' not in invite:
-        invite['used_by'] = []
-    invite['used_by'].append(user_id)
-    invite['last_used'] = datetime.now().isoformat()
-    
-    # Для одноразовых кодов деактивируем сразу
-    if invite['max_uses'] == 1:
-        invite['is_active'] = False
-    
-    await write_json(config.INVITE_CODES_FILE, invite_codes)
-    
-    return True, invite
+        # Проверяем обязательные параметры
+        if not code_type:
+            logger.error("❌ code_type обязателен для создания инвайт-кода")
+            return None
+        
+        # Генерируем код
+        import uuid
+        code = str(uuid.uuid4())[:12].upper()
+        
+        # Определяем название из конфигурации
+        code_info = config.INVITE_CODE_TYPES.get(code_type, {})
+        name = code_info.get('name', 'Подписка')
+        
+        if is_gift:
+            name = f"🎁 {name}"
+        elif "certificate" in code_type:
+            name = f"🎫 Сертификат"
+        
+        # Базовые данные кода
+        invite_data: Dict[str, Any] = {
+            'code': code,
+            'type': code_type,
+            'name': name,
+            'days': int(days) if days else 30,
+            'max_uses': int(max_uses) if max_uses else 1,
+            'used_count': 0,
+            'used_by': [],
+            'is_active': True,  # ВАЖНО: по умолчанию активен
+            'created_at': datetime.now().isoformat(),
+            'expires_at': (datetime.now() + timedelta(days=90)).isoformat(),  # 90 дней
+            'is_gift': bool(is_gift),
+            'is_certificate': "certificate" in code_type
+        }
+        
+        # Добавляем дополнительные поля
+        if created_by is not None:
+            invite_data['created_by'] = int(created_by)
+        
+        if pair_owner is not None:
+            invite_data['pair_owner'] = int(pair_owner)
+        
+        # Добавляем дополнительные данные если указаны
+        if extra_data and isinstance(extra_data, dict):
+            # Объединяем, но не перезаписываем важные поля
+            for key, value in extra_data.items():
+                if key not in ['code', 'type', 'days', 'max_uses', 'is_active']:
+                    invite_data[key] = value
+        
+        # Сохраняем
+        invites = await read_json(config.INVITE_CODES_FILE)
+        if invites is None:
+            invites = {}
+        
+        invites[code] = invite_data
+        await write_json(config.INVITE_CODES_FILE, invites)
+        
+        logger.info(f"✅ Создан инвайт-код: {code} (тип: {code_type}, дней: {days}, активен: {invite_data['is_active']})")
+        return code
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка создания инвайт-кода: {e}", exc_info=True)
+        return None
 
+async def use_invite_code(invite_code: str, user_id: int) -> tuple:
+    """Использование инвайт-кода или сертификата - ОБНОВЛЕННАЯ"""
+    try:
+        # Читаем файл с кодами
+        invites = await read_json(config.INVITE_CODES_FILE)
+        
+        if not invites or not isinstance(invites, dict):
+            return False, "База инвайт-кодов недоступна"
+        
+        # Ищем код
+        if invite_code not in invites:
+            return False, "Код не найден"
+        
+        invite_data = invites[invite_code]
+        
+        # Проверяем, что данные в правильном формате
+        if not isinstance(invite_data, dict):
+            return False, "Ошибка данных кода"
+        
+        # Проверяем активность кода (ВАЖНО!)
+        if not invite_data.get('is_active', True):
+            return False, "Код неактивен"
+        
+        # Проверяем срок действия
+        expires_at = invite_data.get('expires_at')
+        if expires_at:
+            try:
+                expiry_date = datetime.fromisoformat(expires_at)
+                if datetime.now() > expiry_date:
+                    # Помечаем как неактивный
+                    invite_data['is_active'] = False
+                    invites[invite_code] = invite_data
+                    await write_json(config.INVITE_CODES_FILE, invites)
+                    return False, "Срок действия кода истек"
+            except:
+                pass  # Если ошибка парсинга даты, пропускаем проверку
+        
+        # Проверяем максимальное количество использований
+        max_uses = invite_data.get('max_uses', 1)
+        used_count = invite_data.get('used_count', 0)
+        
+        if used_count >= max_uses:
+            # Помечаем как неактивный
+            invite_data['is_active'] = False
+            invites[invite_code] = invite_data
+            await write_json(config.INVITE_CODES_FILE, invites)
+            return False, "Код уже использован"
+        
+        # Проверяем, не использовал ли уже этот пользователь код
+        used_by = invite_data.get('used_by', [])
+        if user_id in used_by:
+            return False, "Вы уже использовали этот код"
+        
+        # Все проверки пройдены - активируем код
+        used_count += 1
+        used_by.append(user_id)
+        
+        invite_data['used_count'] = used_count
+        invite_data['used_by'] = used_by
+        
+        # Если использован максимальное количество раз - деактивируем
+        if used_count >= max_uses:
+            invite_data['is_active'] = False
+        
+        # Сохраняем изменения
+        invites[invite_code] = invite_data
+        await write_json(config.INVITE_CODES_FILE, invites)
+        
+        # Возвращаем данные кода
+        return True, {
+            'code': invite_code,
+            'name': invite_data.get('name', 'Подписка'),
+            'days': invite_data.get('days', 30),
+            'type': invite_data.get('type', 'unknown'),
+            'is_certificate': invite_data.get('is_certificate', False),
+            'is_gift': invite_data.get('is_gift', False)
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка использования инвайт-кода {invite_code}: {e}", exc_info=True)
+        return False, f"Ошибка сервера: {str(e)[:100]}"
 async def get_all_invite_codes(include_hidden=False):
     """Возвращает все инвайт-коды"""
     invite_codes = await read_json(config.INVITE_CODES_FILE)

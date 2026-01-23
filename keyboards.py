@@ -76,15 +76,35 @@ def get_gift_confirmation_keyboard(invite_code, payment_id=None):
     
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 # Админская клавиатура
-admin_keyboard = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text="📊 Статистика"), KeyboardButton(text="👥 Пользователи")],
-        [KeyboardButton(text="💳 Платежи"), KeyboardButton(text="🎫 Инвайт-коды")],
-        [KeyboardButton(text="📤 Заявки на вывод"), KeyboardButton(text="📈 Финансы")], 
-        [KeyboardButton(text="🔙 Главное меню")]
-    ],
-    resize_keyboard=True
-)
+def get_admin_keyboard():
+    """Клавиатура для админ-панели с двумя столбцами"""
+    keyboard = ReplyKeyboardMarkup(
+        keyboard=[
+            # Первая строка из двух столбцов
+            [
+                KeyboardButton(text="📊 Статистика"),
+                KeyboardButton(text="👥 Пользователи")
+            ],
+            # Вторая строка из двух столбцов
+            [
+                KeyboardButton(text="🎫 Инвайт-коды"),
+                KeyboardButton(text="🎁 Создать сертификат")
+            ],
+            # Третья строка из двух столбцов
+            [
+                KeyboardButton(text="📤 Заявки на вывод"),
+                KeyboardButton(text="📢 Массовая рассылка")
+            ],
+            # Отдельная кнопка внизу
+            [
+                KeyboardButton(text="🔙 Главное меню")
+            ]
+        ],
+        resize_keyboard=True
+    )
+    return keyboard
+
+admin_keyboard = get_admin_keyboard()
 
 # РАЗДЕЛ ПОДПИСКИ (очищенный)
 def get_payment_keyboard():
