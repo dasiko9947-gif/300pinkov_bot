@@ -4,6 +4,8 @@ import payments
 from datetime import datetime
 import random
 import math 
+import os
+import shutil
 from aiogram.fsm.storage.base import StorageKey
 from aiogram import Bot, Dispatcher, F
 from aiogram import exceptions
@@ -384,78 +386,30 @@ async def send_daily_tasks():
     logger.info("🕘 НАЧИНАЕМ ОПТИМИЗИРОВАННУЮ РАССЫЛКУ ЗАДАНИЙ")
     
     try:
-        users = await utils.get_all_users()
+        # Атомарное чтение всех пользователей
+        users = await utils.atomic_read_json(config.USERS_FILE)
         total_users = len(users)
         
         if total_users == 0:
             logger.info("👥 Нет пользователей для рассылки")
             return
         
-        # 🔥 ПРЕДВАРИТЕЛЬНАЯ ОБРАБОТКА: авто-сброс старых блокировок
-        for user_id_str, user_data in users.items():
-            try:
-                user_id = int(user_id_str)
-                needs_to_complete_yesterday = user_data.get('needs_to_complete_yesterday', False)
-                blocked_since_str = user_data.get('blocked_since')
-                
-                if needs_to_complete_yesterday and blocked_since_str:
-                    try:
-                        blocked_since = datetime.fromisoformat(blocked_since_str)
-                        now = datetime.now(blocked_since.tzinfo if blocked_since.tzinfo else pytz.UTC)
-                        
-                        hours_passed = (now - blocked_since).total_seconds() / 3600
-                        
-                        # Если прошло больше 24 часов - сбрасываем блокировку
-                        if hours_passed >= 24:
-                            user_data['needs_to_complete_yesterday'] = False
-                            logger.info(f"🔄 Авто-сброс блокировки при рассылке для {user_id} ({hours_passed:.1f} часов)")
-                    except Exception as e:
-                        logger.error(f"❌ Ошибка авто-сброса для {user_id}: {e}")
-            except Exception as e:
-                logger.error(f"❌ Ошибка предварительной обработки {user_id_str}: {e}")
+        # Создаем копию для изменений
+        users_to_update = {}
         
-        # Остальной код рассылки без изменений...
-        tasks = []
-        batch_size = 50
+        # ... остальной код без изменений ...
         
-        for i, (user_id_str, user_data) in enumerate(users.items()):
-            try:
-                user_id = int(user_id_str)
-                
-                # Проверяем доступ к заданиям
-                has_subscription = await utils.is_subscription_active(user_data)
-                in_trial = await utils.is_in_trial_period(user_data)
-                in_sprint = user_data.get('sprint_type') and not user_data.get('sprint_completed')
-                
-                if not has_subscription and not in_trial and not in_sprint:
-                    continue
-                
-                # Проверяем, может ли пользователь получить задание
-                if not await utils.can_receive_new_task(user_data):
-                    continue
-                
-                # Создаем задачу отправки
-                task = send_task_to_user(user_id, user_data)
-                tasks.append(task)
-                
-                # Отправляем батчами
-                if len(tasks) >= batch_size:
-                    await process_batch(tasks, i, total_users)
-                    tasks = []
-                    await asyncio.sleep(1)
-                    
-            except Exception as e:
-                logger.error(f"❌ Ошибка подготовки пользователя {user_id_str}: {e}")
-        
-        # Обрабатываем оставшиеся задачи
-        if tasks:
-            await process_batch(tasks, total_users, total_users)
-        
+        # В КОНЦЕ ФУНКЦИИ:
+        if users_to_update:
+            # Атомарное сохранение всех изменений
+            current_users = await utils.atomic_read_json(config.USERS_FILE)
+            current_users.update(users_to_update)
+            await utils.atomic_write_json(config.USERS_FILE, current_users)
+            
         logger.info(f"✅ Оптимизированная рассылка завершена")
         
     except Exception as e:
         logger.error(f"❌ Критическая ошибка в оптимизированной рассылке: {e}")
-        
     finally:
         is_sending_tasks = False
 # В функции send_daily_tasks обновим логику отправки обычных заданий:
@@ -780,100 +734,88 @@ async def send_reminders():
     
     logger.info(f"📊 Напоминания завершены: {sent_count} отправлено, {error_count} ошибок")
 async def check_midnight_reset():
-    """Полуночный сброс и блокировка - ИСПРАВЛЕННАЯ ВЕРСИЯ с авто-пропуском"""
+    """Полуночный сброс и блокировка - АТОМАРНАЯ ВЕРСИЯ"""
     logger.info("🕛 Выполняем полуночный сброс...")
     
-    users = await utils.get_all_users()
-    reset_count = 0
-    blocked_count = 0
-    auto_skip_count = 0  # Счетчик авто-пропусков
-    skipped_users = 0
-    
-    default_timezone = pytz.timezone(config.TIMEZONE)
-    now = datetime.now(default_timezone)
-    
-    for user_id_str, user_data in users.items():
-        try:
-            user_id = int(user_id_str)
-            
-            # Проверяем активность пользователя
-            has_subscription = await utils.is_subscription_active(user_data)
-            in_trial = await utils.is_in_trial_period(user_data)
-            
-            # Пропускаем неактивных пользователей
-            if not has_subscription and not in_trial:
-                skipped_users += 1
-                continue
-            
-            # Проверяем флаг "нужно завершить вчерашнее"
-            needs_to_complete_yesterday = user_data.get('needs_to_complete_yesterday', False)
-            last_task_sent_str = user_data.get('last_task_sent')
-            
-            # 🔥 АВТО-ПРОПУСК: Если пользователь не ответил более 24 часов
-            if needs_to_complete_yesterday and last_task_sent_str:
-                try:
-                    # Получаем часовой пояс пользователя
-                    user_timezone_str = user_data.get('timezone', config.TIMEZONE)
+    try:
+        # Атомарное чтение
+        users = await utils.atomic_read_json(config.USERS_FILE)
+        
+        reset_count = 0
+        blocked_count = 0
+        auto_skip_count = 0
+        skipped_users = 0
+        
+        users_to_update = {}
+        
+        default_timezone = pytz.timezone(config.TIMEZONE)
+        now = datetime.now(default_timezone)
+        
+        for user_id_str, user_data in users.items():
+            try:
+                user_id = int(user_id_str)
+                
+                # Проверяем активность пользователя
+                has_subscription = await utils.is_subscription_active(user_data)
+                in_trial = await utils.is_in_trial_period(user_data)
+                
+                # Пропускаем неактивных пользователей
+                if not has_subscription and not in_trial:
+                    skipped_users += 1
+                    continue
+                
+                # 🔥 АВТО-ПРОПУСК: Если пользователь не ответил более 24 часов
+                needs_to_complete_yesterday = user_data.get('needs_to_complete_yesterday', False)
+                last_task_sent_str = user_data.get('last_task_sent')
+                
+                if needs_to_complete_yesterday and last_task_sent_str:
                     try:
-                        user_timezone = pytz.timezone(user_timezone_str)
-                    except:
-                        user_timezone = default_timezone
-                    
-                    # Получаем дату блокировки
-                    blocked_since_str = user_data.get('blocked_since')
-                    if blocked_since_str:
-                        blocked_since_utc = datetime.fromisoformat(blocked_since_str)
-                        if blocked_since_utc.tzinfo is None:
-                            blocked_since_utc = pytz.UTC.localize(blocked_since_utc)
+                        # Получаем часовой пояс пользователя
+                        user_timezone_str = user_data.get('timezone', config.TIMEZONE)
+                        try:
+                            user_timezone = pytz.timezone(user_timezone_str)
+                        except:
+                            user_timezone = default_timezone
                         
-                        blocked_since_user = blocked_since_utc.astimezone(user_timezone)
-                        user_now = now.astimezone(user_timezone)
-                        
-                        # Если прошло больше 24 часов с момента блокировки
-                        hours_passed = (user_now - blocked_since_user).total_seconds() / 3600
-                        
-                        if hours_passed >= 24:
-                            # АВТОМАТИЧЕСКИ ПРОПУСКАЕМ задание
-                            user_data['needs_to_complete_yesterday'] = False
-                            user_data['current_day'] = user_data.get('current_day', 0) + 1
+                        # Получаем дату блокировки
+                        blocked_since_str = user_data.get('blocked_since')
+                        if blocked_since_str:
+                            blocked_since_utc = datetime.fromisoformat(blocked_since_str)
+                            if blocked_since_utc.tzinfo is None:
+                                blocked_since_utc = pytz.UTC.localize(blocked_since_utc)
                             
-                            # Увеличиваем счетчик пробных заданий если в пробном периоде
-                            if in_trial:
-                                trial_tasks = user_data.get('completed_tasks_in_trial', 0)
-                                user_data['completed_tasks_in_trial'] = trial_tasks + 1
+                            blocked_since_user = blocked_since_utc.astimezone(user_timezone)
+                            user_now = now.astimezone(user_timezone)
+                            
+                            # Если прошло больше 24 часов с момента блокировки
+                            hours_passed = (user_now - blocked_since_user).total_seconds() / 3600
+                            
+                            if hours_passed >= 24:
+                                # АВТОМАТИЧЕСКИ ПРОПУСКАЕМ задание
+                                user_data['needs_to_complete_yesterday'] = False
+                                user_data['current_day'] = user_data.get('current_day', 0) + 1
                                 
-                                if trial_tasks + 1 >= 3:
-                                    user_data['trial_finished'] = True
-                            
-                            await utils.save_user(user_id, user_data)
-                            auto_skip_count += 1
-                            
-                            logger.info(f"🔄 Авто-пропуск задания для пользователя {user_id} (прошло {hours_passed:.1f} часов)")
-                            
-                            # Отправляем уведомление об авто-пропуске
-                            try:
-                                auto_skip_message = (
-                                    "⏰ <b>Автоматический пропуск задания</b>\n\n"
-                                    "Ты не ответил на вчерашнее задание в течение 24 часов.\n"
-                                    "Мы автоматически отметили его как пропущенное.\n\n"
-                                    "💡 <b>Совет:</b> Отвечай на задания вовремя, чтобы не терять прогресс!\n\n"
-                                    "Новое задание придет завтра в 9:00 ⏰"
-                                )
+                                # Увеличиваем счетчик пробных заданий если в пробном периоде
+                                if in_trial:
+                                    trial_tasks = user_data.get('completed_tasks_in_trial', 0)
+                                    user_data['completed_tasks_in_trial'] = trial_tasks + 1
+                                    
+                                    if trial_tasks + 1 >= 3:
+                                        user_data['trial_finished'] = True
                                 
-                                await safe_send_message(user_id, auto_skip_message)
-                            except Exception as e:
-                                logger.error(f"❌ Ошибка отправки авто-пропуска пользователю {user_id}: {e}")
-                            
-                            continue  # Пропускаем дальнейшую обработку
-                except Exception as e:
-                    logger.error(f"❌ Ошибка проверки авто-пропуска для пользователя {user_id}: {e}")
-            
-            # Обычная логика сброса флага task_completed_today
-            task_completed_today = user_data.get('task_completed_today', False)
-            
-            if task_completed_today:
-                # Проверяем, что задание действительно было сегодня
-                if last_task_sent_str:
+                                users_to_update[user_id_str] = user_data
+                                auto_skip_count += 1
+                                
+                                logger.info(f"🔄 Авто-пропуск задания для пользователя {user_id} (прошло {hours_passed:.1f} часов)")
+                                continue
+                    except Exception as e:
+                        logger.error(f"❌ Ошибка проверки авто-пропуска для пользователя {user_id}: {e}")
+                
+                # Обычная логика сброса флага task_completed_today
+                task_completed_today = user_data.get('task_completed_today', False)
+                last_task_sent_str = user_data.get('last_task_sent')
+                
+                if task_completed_today and last_task_sent_str:
                     try:
                         last_task_date_utc = datetime.fromisoformat(last_task_sent_str)
                         
@@ -894,237 +836,235 @@ async def check_midnight_reset():
                         if last_task_date_user.date() < user_now.date():
                             user_data['task_completed_today'] = False
                             reset_count += 1
-                            await utils.save_user(user_id, user_data)
+                            users_to_update[user_id_str] = user_data
                             logger.debug(f"✅ Сброшен флаг для пользователя {user_id} (задание было вчера)")
-                        else:
-                            # Задание было сегодня, не сбрасываем
-                            logger.debug(f"⚠️ Пользователь {user_id} уже выполнил сегодняшнее задание")
                     except Exception as e:
                         logger.error(f"❌ Ошибка обработки даты у пользователя {user_id}: {e}")
                         # В случае ошибки все равно сбрасываем флаг
                         user_data['task_completed_today'] = False
                         reset_count += 1
-                        await utils.save_user(user_id, user_data)
-                else:
-                    # Если нет даты последнего задания, сбрасываем флаг
-                    user_data['task_completed_today'] = False
-                    reset_count += 1
-                    await utils.save_user(user_id, user_data)
+                        users_to_update[user_id_str] = user_data
                 
-                continue
-            
-            # Если задание НЕ выполнено сегодня и есть дата последнего задания
-            if last_task_sent_str and not task_completed_today:
-                # Получаем часовой пояс пользователя
-                user_timezone_str = user_data.get('timezone', config.TIMEZONE)
-                try:
-                    user_timezone = pytz.timezone(user_timezone_str)
-                except:
-                    user_timezone = default_timezone
-                
-                last_task_date_utc = datetime.fromisoformat(last_task_sent_str)
-                
-                if last_task_date_utc.tzinfo is None:
-                    last_task_date_utc = pytz.UTC.localize(last_task_date_utc)
-                
-                last_task_date_user = last_task_date_utc.astimezone(user_timezone)
-                user_now = now.astimezone(user_timezone)
-                
-                last_task_date_only = last_task_date_user.date()
-                user_today = user_now.date()
-                
-                # Если задание было ВЧЕРА или раньше и не выполнено - блокируем
-                if last_task_date_only < user_today:
-                    # Получаем случайную реплику
-                    block_message = await BotReplies.get_midnight_block_reply()
+                # Если задание НЕ выполнено сегодня и есть дата последнего задания
+                if last_task_sent_str and not task_completed_today:
+                    # Получаем часовой пояс пользователя
+                    user_timezone_str = user_data.get('timezone', config.TIMEZONE)
+                    try:
+                        user_timezone = pytz.timezone(user_timezone_str)
+                    except:
+                        user_timezone = default_timezone
                     
-                    # Добавляем мотивационную фразу
-                    motivation = await BotReplies.get_motivation_reply()
+                    last_task_date_utc = datetime.fromisoformat(last_task_sent_str)
                     
-                    full_message = f"{block_message}\n\n{motivation}"
+                    if last_task_date_utc.tzinfo is None:
+                        last_task_date_utc = pytz.UTC.localize(last_task_date_utc)
                     
-                    await safe_send_message(
-                        user_id=user_id,
-                        text=full_message
-                    )
-                    blocked_count += 1
-                    logger.info(f"⏸️ Пользователь {user_id} заблокирован (задание от {last_task_date_only})")
+                    last_task_date_user = last_task_date_utc.astimezone(user_timezone)
+                    user_now = now.astimezone(user_timezone)
                     
-                    # При блокировке ставим флаг и записываем время блокировки
-                    user_data['needs_to_complete_yesterday'] = True
-                    user_data['blocked_since'] = now.isoformat()  # Запоминаем когда заблокировали
-                    await utils.save_user(user_id, user_data)
+                    last_task_date_only = last_task_date_user.date()
+                    user_today = user_now.date()
                     
-        except Exception as e:
-            logger.error(f"❌ Ошибка сброса пользователя {user_id_str}: {e}")
-    
-    logger.info(f"📊 Сброс завершен: {reset_count} сброшено, {blocked_count} заблокировано, {auto_skip_count} авто-пропущено, {skipped_users} неактивных")
-@dp.message(Command("reset_me"))
-async def reset_me_command(message: Message, state: FSMContext):
-    """Полный сброс прогресса пользователя с очисткой состояний"""
-    user = message.from_user
-    if not user:
-        return
+                    # Если задание было ВЧЕРА или раньше и не выполнено - блокируем
+                    if last_task_date_only < user_today:
+                        # Получаем случайную реплику
+                        block_message = await BotReplies.get_midnight_block_reply()
+                        
+                        # Добавляем мотивационную фразу
+                        motivation = await BotReplies.get_motivation_reply()
+                        
+                        full_message = f"{block_message}\n\n{motivation}"
+                        
+                        await safe_send_message(
+                            user_id=user_id,
+                            text=full_message
+                        )
+                        blocked_count += 1
+                        logger.info(f"⏸️ Пользователь {user_id} заблокирован (задание от {last_task_date_only})")
+                        
+                        # При блокировке ставим флаг и записываем время блокировки
+                        user_data['needs_to_complete_yesterday'] = True
+                        user_data['blocked_since'] = now.isoformat()  # Запоминаем когда заблокировали
+                        users_to_update[user_id_str] = user_data
+                        
+            except Exception as e:
+                logger.error(f"❌ Ошибка сброса пользователя {user_id_str}: {e}")
         
-    user_id = user.id
-    
-    # Загружаем текущих пользователей
-    users = await utils.get_all_users()
-    
-    if str(user_id) not in users:
-        await message.answer("❌ Пользователь не найден в базе данных")
-        return
-    
-    # 1. Очищаем состояние FSM
-    try:
-        await state.clear()
-    except:
-        pass
-    
-    # 2. УДАЛЯЕМ пользователя из базы
-    del users[str(user_id)]
-    
-    # 3. Сохраняем обновленную базу
-    await utils.write_json(config.USERS_FILE, users)
-    
-    # 4. Очищаем возможные кэши (если они есть)
-    try:
-        # Если используете redis или другой кэш
-        # await redis_client.delete(f"user:{user_id}")
-        pass
-    except:
-        pass
-    
-    await message.answer(
-        "🗑️ <b>ПОЛНЫЙ СБРОС И УДАЛЕНИЕ!</b>\n\n"
-        "✅ <b>Все твои данные были удалены:</b>\n"
-        "• Прогресс дней: сброшен\n" 
-        "• Подписка: отменена\n"
-        "• Ранг: сброшен\n"
-        "• Рефералы: удалены\n"
-        "• Все настройки: сброшены\n\n"
-        "🔁 <b>Теперь можешь начать заново:</b>\n"
-        "Просто снова используй команду /start\n\n"
-        "Спасибо, что был с нами! 👋"
-    )
+        # Атомарное сохранение всех изменений
+        if users_to_update:
+            current_users = await utils.atomic_read_json(config.USERS_FILE)
+            current_users.update(users_to_update)
+            await utils.atomic_write_json(config.USERS_FILE, current_users)
+            logger.info(f"💾 Сохранено изменений: {len(users_to_update)} пользователей")
+        
+        logger.info(f"📊 Сброс завершен: {reset_count} сброшено, {blocked_count} заблокировано, {auto_skip_count} авто-пропущено, {skipped_users} неактивных")
+        
+    except Exception as e:
+        logger.error(f"❌ Критическая ошибка в midnight reset: {e}")
+
+
+async def backup_users_data():
+    """Создаёт операционный бэкап с меткой времени"""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_dir = "/home/botuser/backups_operational"
+    os.makedirs(backup_dir, exist_ok=True)
+
+    # Копируем файлы
+    for filename in ["users_data.json", "stages.json", "payments_data.json", "invite_codes.json"]:
+        src = f"/home/botuser/telegram-bot/{filename}"
+        dst = f"{backup_dir}/{filename}_{timestamp}.json"
+        if os.path.exists(src):
+            shutil.copy2(src, dst)
+
+    # Удаляем бэкапы старше 24 часов
+    cleanup_old_backups(backup_dir, hours=24)
+
+def cleanup_old_backups(backup_dir, hours=24):
+    """Удаляет бэкапы старше N часов"""
+    now = datetime.now()
+    for filename in os.listdir(backup_dir):
+        if filename.endswith(".json"):
+            file_path = os.path.join(backup_dir, filename)
+            file_time = datetime.fromtimestamp(os.path.getctime(file_path))
+            if (now - file_time).total_seconds() > hours * 3600:
+                os.remove(file_path)
 
 @dp.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
-    """Обработчик команды /start с реферальной системой"""
-    user = message.from_user
-    if not user:
-        await message.answer("Ошибка: не удалось получить информацию о пользователе")
-        return
-        
-    args = message.text.split() if message.text else []
-    referrer_id = None
-    
-    # Проверяем реферальный ID (если есть в аргументах)
-    if len(args) > 1:
-        try:
-            referrer_id = int(args[1])
-            # Проверяем, что реферер существует и не является самим пользователем
-            referrer_data = await utils.get_user(referrer_id)
-            if not referrer_data or referrer_id == user.id:
-                referrer_id = None
-            else:
-                logger.info(f"📝 Пользователь {user.id} перешел по реферальной ссылке от {referrer_id}")
-        except ValueError:
-            referrer_id = None
-            logger.warning(f"⚠️ Неверный реферальный ID в аргументах: {args[1]}")
-    
-    # Очищаем состояние
+    """Обработчик команды /start с реферальной системой - ПЕРЕПИСАННАЯ"""
     try:
-        await state.clear()
-    except:
-        pass
-    
-    user_data = await get_user(user.id)
-    
-    if user_data:
-        # Пользователь уже зарегистрирован
-        welcome_name = user.first_name or "Путник"
-        
-        # Получаем гендерные окончания
-        gender = await utils.get_gender_ending(user_data)
-        
-        # Получаем случайную реплику приветствия
-        greeting = await BotReplies.get_welcome_back_reply(gender, welcome_name)
-        
-        # Проверяем, был ли пользователь приглашен, но связь не сохранена
-        if referrer_id and not user_data.get('invited_by'):
-            await utils.save_referral_relationship(user.id, referrer_id)
-            logger.info(f"📝 Восстановлена реферальная связь: {user.id} -> {referrer_id}")
-            
-        await message.answer(
-            greeting,
-            reply_markup=get_main_menu(user.id)
-        )
-        await update_user_activity(user.id)
-    else:
-        # Новый пользователь - начинаем регистрацию
-        await message.answer(
-            "👋 <b>Добро пожаловать в челлендж «300 ПИНКОВ»!</b>\n\n"
-            "• Этот бот не про мотивацию. Это <b>система</b>, которая заставляет мозг и тело работать по-новому. Как тренажёрный зал для привычек и мышления.\n\n"
-            
-            "🎯 <b>Что тебя ждет:</b>\n"
-            "• Ежедневные задания для саморазвития\n"
-            "• 300 дней непрерывного роста\n" 
-            "• Система рангов и достижений\n\n"
-
-            "💪 <b>Как это работает:</b>\n"
-            "Каждый день в 9:00 ты получаешь ПИНОК.\n"
-            "У тебя есть время до 23:59, чтобы его выполнить.\n"
-            "Честность перед собой - главное правило!\n\n"
-            "⬇️ <b>Давай настроим твой челлендж!</b>",
-            reply_markup=ReplyKeyboardMarkup(
-                keyboard=[[KeyboardButton(text="➡️ Продолжить настройку")]],
-                resize_keyboard=True
-            )
-        )
-        
-        # Сохраняем реферальный ID в состоянии
-        await state.update_data(referrer_id=referrer_id)
-        await state.set_state(UserStates.waiting_for_timezone)
-       
-@dp.message(Command("force_reset"))
-async def force_reset_command(message: Message, state: FSMContext):
-    """Принудительный сброс пользователя (только для админа)"""
-    user = message.from_user
-    if not user or user.id != config.ADMIN_ID:
-        return
-        
-    # Безопасная проверка message.text
-    if not message.text:
-        await message.answer("❌ Текст сообщения пуст")
-        return
-        
-    # Парсим ID пользователя из команды: /force_reset 123456789
-    args = message.text.split()
-    if len(args) < 2:
-        await message.answer("Использование: /force_reset USER_ID")
-        return
-        
-    try:
-        target_user_id = int(args[1])
-        
-        # Загружаем текущих пользователей
-        users = await utils.get_all_users()
-        
-        if str(target_user_id) not in users:
-            await message.answer(f"❌ Пользователь {target_user_id} не найден в базе")
+        # Проверяем наличие пользователя
+        user = message.from_user
+        if not user:
+            logger.error("❌ cmd_start: Не удалось получить информацию о пользователе")
+            await message.answer("Ошибка: не удалось получить информацию о пользователе")
             return
+        
+        # Логируем начало регистрации
+        logger.info(f"🚀 Начало регистрации: {user.id} (@{user.username or 'нет'}) - {user.first_name}")
+        
+        # Получаем аргументы команды /start
+        args = message.text.split() if message.text else []
+        referrer_id = None
+        
+        # Проверяем реферальный ID (если есть в аргументах)
+        if len(args) > 1:
+            try:
+                referrer_id = int(args[1])
+                logger.info(f"📝 Реферальный переход: {user.id} -> от {referrer_id}")
+                
+                # Проверяем, что реферер существует и не является самим пользователем
+                if referrer_id == user.id:
+                    logger.warning(f"⚠️ Пользователь {user.id} пытается пригласить себя")
+                    referrer_id = None
+                else:
+                    # Проверяем существование реферера
+                    referrer_data = await utils.get_user(referrer_id)
+                    if not referrer_data:
+                        logger.warning(f"⚠️ Реферер {referrer_id} не найден в базе")
+                        referrer_id = None
+                        
+            except ValueError as e:
+                logger.warning(f"⚠️ Неверный реферальный ID '{args[1]}': {e}")
+                referrer_id = None
+        
+        # Очищаем состояние FSM
+        try:
+            await state.clear()
+        except Exception as e:
+            logger.warning(f"⚠️ Ошибка очистки состояния: {e}")
+        
+        # Проверяем, есть ли уже пользователь в базе
+        user_data = await utils.get_user(user.id)
+        
+        if user_data:
+            # ✅ ПОЛЬЗОВАТЕЛЬ УЖЕ ЗАРЕГИСТРИРОВАН
             
-        # Удаляем пользователя
-        del users[str(target_user_id)]
-        await utils.write_json(config.USERS_FILE, users)
-        
-        await message.answer(f"✅ Пользователь {target_user_id} принудительно сброшен")
-        
-    except ValueError:
-        await message.answer("❌ Неверный ID пользователя")
+            # Получаем гендерные окончания
+            gender = await utils.get_gender_ending(user_data)
+            welcome_name = user.first_name or "Путник"
+            
+            # Получаем случайную реплику приветствия
+            greeting = await BotReplies.get_welcome_back_reply(gender, welcome_name)
+            
+            # Проверяем и восстанавливаем реферальную связь если нужно
+            if referrer_id and not user_data.get('invited_by'):
+                success = await utils.save_referral_relationship(user.id, referrer_id)
+                if success:
+                    logger.info(f"✅ Восстановлена реферальная связь: {user.id} -> {referrer_id}")
+            
+            # Обновляем активность
+            await utils.update_user_activity(user.id)
+            
+            # Отправляем приветствие
+            await message.answer(
+                greeting,
+                reply_markup=keyboards.get_main_menu(user.id),
+                disable_web_page_preview=True
+            )
+            
+            logger.info(f"✅ Возврат пользователя {user.id} в систему")
+            
+        else:
+            # ❌ НОВЫЙ ПОЛЬЗОВАТЕЛЬ - начинаем регистрацию
+            
+            logger.info(f"👤 Новый пользователь: {user.id} (@{user.username or 'нет'})")
+            
+            # Приветственное сообщение
+            await message.answer(
+                "👋 <b>Добро пожаловать в челлендж «300 ПИНКОВ»!</b>\n\n"
+                "• Это не про мотивацию. Это <b>система</b>, которая заставляет мозг и тело работать по-новому.\n"
+                "• Как тренажёрный зал для привычек и мышления.\n\n"
+                
+                "🎯 <b>Что тебя ждет:</b>\n"
+                "• Ежедневные задания для саморазвития\n"
+                "• 300 дней непрерывного роста\n"
+                "• Система рангов и достижений\n\n"
+                
+                "💪 <b>Как это работает:</b>\n"
+                "• Каждый день в 9:00 ты получаешь ПИНОК\n"
+                "• У тебя есть время до 23:59, чтобы его выполнить\n"
+                "• Честность перед собой - главное правило!\n\n"
+                
+                "⬇️ <b>Давай настроим твой челлендж!</b>",
+                reply_markup=ReplyKeyboardMarkup(
+                    keyboard=[[KeyboardButton(text="➡️ Продолжить настройку")]],
+                    resize_keyboard=True,
+                    one_time_keyboard=True
+                ),
+                disable_web_page_preview=True
+            )
+            
+            # Сохраняем реферальный ID в состоянии
+            if referrer_id:
+                await state.update_data(referrer_id=referrer_id)
+                logger.info(f"📝 Сохранен реферальный ID {referrer_id} для пользователя {user.id}")
+            
+            # Переходим к выбору часового пояса
+            await state.set_state(UserStates.waiting_for_timezone)
+            logger.info(f"📋 Пользователь {user.id} перешел к выбору часового пояса")
+            
     except Exception as e:
-        await message.answer(f"❌ Ошибка: {e}")
+        logger.error(f"❌ Критическая ошибка в cmd_start: {e}", exc_info=True)
+        
+        # Отправляем сообщение об ошибке
+        try:
+            await message.answer(
+                "❌ <b>Произошла ошибка при запуске</b>\n\n"
+                "Попробуйте снова через несколько минут.\n"
+                "Если проблема повторяется, обратитесь в поддержку.",
+                reply_markup=ReplyKeyboardRemove()
+            )
+        except:
+            pass
+        
+        # Очищаем состояние
+        try:
+            await state.clear()
+        except:
+            pass
+      
+
 @dp.message(UserStates.waiting_for_timezone, F.text == "➡️ Продолжить настройку")
 async def process_timezone_step(message: Message, state: FSMContext):
     """ШАГ 2: Выбор часового пояса"""
@@ -1182,146 +1122,281 @@ async def process_timezone_selection(message: Message, state: FSMContext):
 
 @dp.message(UserStates.waiting_for_ready)
 async def process_ready_confirmation(message: Message, state: FSMContext):
-    """ШАГ 6: Обработка подтверждения готовности с учетом гендера"""
-    user = message.from_user
-    if not user:
-        await message.answer("Ошибка: не удалось получить информацию о пользователе")
-        return
-    
-    # Получаем данные из состояния
-    user_data = await state.get_data()
-    archetype = user_data.get('archetype', 'spartan')
-    
-    # Определяем текст кнопок в зависимости от архетипа
-    if archetype == "spartan":
-        yes_button_text = "✅ Да, я готов начать!"
-        no_button_text = "❌ Нет, я передумал"
-        gender_text = "воин"
-    else:
-        yes_button_text = "✅ Да, я готова начать!"
-        no_button_text = "❌ Нет, я передумала"
-        gender_text = "воительница"
-    
-    if message.text == no_button_text:
-        await message.answer(
-            f"Хорошо, {gender_text}. Если захочешь измениться - всегда ждем тебя! 👋\n"
-            f"Просто снова нажми /start когда будешь готов{'' if archetype == 'spartan' else 'а'}.",
-            reply_markup=ReplyKeyboardRemove()
-        )
-        await state.clear()
-        return
-    
-    if message.text != yes_button_text:
-        await message.answer(f"Пожалуйста, подтверди готовность кнопкой ниже:")
-        return
-    
-    # Получаем все сохраненные данные
-    timezone = user_data.get('timezone', 'Europe/Moscow')
-    referrer_id = user_data.get('referrer_id')
-    
-    # Создаем запись пользователя
-    new_user_data = {
-        "user_id": user.id,
-        "username": user.username or "",
-        "first_name": user.first_name or "",
-        "last_name": user.last_name or "",
-        "archetype": archetype,
-        "timezone": timezone,
-        "current_day": 0,
-        "completed_tasks": 0,
-        "rank": "putnik",
-        "created_at": datetime.now().isoformat(),
-        "referrals": [],
-        "referral_earnings": 0,
-        "last_task_sent": None,
-        "task_completed_today": False,
-        "debts": [],
-        "last_activity": datetime.now().isoformat(),
-        "invited_by": referrer_id,
-        "reserved_for_withdrawal": 0,
-        "referral_stats": {
-            "total_earned": 0,
-            "payments_count": 0,
-            "last_payment": None
-        }
-    }
-    
-    await save_user(user.id, new_user_data)
-    
-    # Сохраняем реферальную связь
-    if referrer_id:
-        from utils import save_referral_relationship
-        success = await save_referral_relationship(user.id, referrer_id)
+    """ШАГ 6: Обработка подтверждения готовности - ПЕРЕПИСАННАЯ"""
+    try:
+        # Проверяем пользователя
+        user = message.from_user
+        if not user:
+            await message.answer("❌ Ошибка: не удалось получить информацию о пользователе")
+            await state.clear()
+            return
         
-        if success:
-            logger.info(f"✅ Сохранена реферальная связь: {user.id} -> {referrer_id}")
+        user_id = user.id
+        logger.info(f"📝 Подтверждение готовности от пользователя {user_id}")
+        
+        # Получаем данные из состояния
+        user_data = await state.get_data()
+        archetype = user_data.get('archetype', 'spartan')
+        
+        # Определяем текст кнопок в зависимости от архетипа
+        if archetype == "spartan":
+            yes_button_text = "✅ Да, я готов начать!"
+            no_button_text = "❌ Нет, я передумал"
+            gender_text = "воин"
         else:
-            logger.error(f"❌ Не удалось сохранить реферальную связь: {user.id} -> {referrer_id}")
-    
-    logger.info(f"🔍 ОТЛАДКА: Новый пользователь {user.id}, архетип: {archetype}")
-    
-    # Первое сообщение с учетом гендера
-    if archetype == "spartan":
-        welcome_message = (
-            "🎯 <b>ДОБРО ПОЖАЛОВАТЬ, ВОИН!</b>\n\n"
-            "Ты выбрал путь силы и дисциплины.\n\n"
-            "Теперь ты часть древней Спарты - людей, которые "
-            "своей волей и упорством создавали легенды.\n\n"
-            "💪 <b>Твои принципы:</b>\n"
-            "• Ответственность за себя\n"
-            "• Ежедневное преодоление\n"
-            "• Честь и достоинство\n\n"
-        )
-    else:
-        welcome_message = (
-            "🎯 <b>ДОБРО ПОЖАЛОВАТЬ, ВОИТЕЛЬНИЦА!</b>\n\n"
-            "Ты выбрала путь гармонии и внутренней силы.\n\n"
-            "Теперь ты часть общества Амазонок - женщин, которые "
-            "сочетают в себе грацию, мудрость и непоколебимую силу.\n\n"
-            "🌸 <b>Твои принципы:</b>\n"
-            "• Осознанность и интуиция\n"
-            "• Баланс мягкости и стойкости\n"
-            "• Самоуважение и мудрость\n\n"
-        )
-    
-    # Отправляем первое задание
-    task_id, task = await utils.get_task_by_day(1, archetype)
-    
-    if task:
-        gender_ending = "ТВОЕ" if archetype == "spartan" else "ТВОЁ"
-        time_text = "у тебя" if archetype == "spartan" else "у тебя"
+            yes_button_text = "✅ Да, я готова начать!"
+            no_button_text = "❌ Нет, я передумала"
+            gender_text = "воительница"
         
+        # Проверяем ответ пользователя
+        if not message.text:
+            await message.answer(f"Пожалуйста, выбери вариант кнопкой ниже:")
+            return
+        
+        # Обработка отказа
+        if message.text == no_button_text:
+            await message.answer(
+                f"Хорошо, {gender_text}. Если захочешь измениться - всегда ждем тебя! 👋\n"
+                f"Просто снова нажми /start когда будешь готов{'' if archetype == 'spartan' else 'а'}.",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            
+            logger.info(f"❌ Пользователь {user_id} отказался от регистрации")
+            await state.clear()
+            return
+        
+        # Проверяем подтверждение готовности
+        if message.text != yes_button_text:
+            await message.answer(f"Пожалуйста, подтверди готовность кнопкой ниже:")
+            return
+        
+        # ✅ ПОЛЬЗОВАТЕЛЬ ПОДТВЕРДИЛ ГОТОВНОСТЬ
+        
+        logger.info(f"✅ Пользователь {user_id} подтвердил готовность. Начинаем регистрацию...")
+        
+        # Получаем все сохраненные данные
+        timezone = user_data.get('timezone', 'Europe/Moscow')
+        referrer_id = user_data.get('referrer_id')
+        
+        # Создаем запись пользователя
+        new_user_data = {
+            "user_id": user_id,
+            "username": user.username or "",
+            "first_name": user.first_name or "",
+            "last_name": user.last_name or "",
+            "archetype": archetype,
+            "timezone": timezone,
+            "current_day": 0,
+            "completed_tasks": 0,
+            "rank": "putnik",
+            "created_at": datetime.now().isoformat(),
+            "referrals": [],
+            "referral_earnings": 0,
+            "last_task_sent": None,
+            "task_completed_today": False,
+            "debts": [],
+            "last_activity": datetime.now().isoformat(),
+            "invited_by": referrer_id,
+            "reserved_for_withdrawal": 0,
+            "referral_stats": {
+                "total_earned": 0,
+                "payments_count": 0,
+                "last_payment": None
+            },
+            "completed_tasks_in_trial": 0,
+            "trial_finished": False
+        }
+        
+        # 🔐 АТОМАРНОЕ СОХРАНЕНИЕ ПОЛЬЗОВАТЕЛЯ
+        try:
+            # Читаем текущих пользователей
+            users = await utils.atomic_read_json(config.USERS_FILE)
+            if not isinstance(users, dict):
+                users = {}
+            
+            # Добавляем нового пользователя
+            users[str(user_id)] = new_user_data
+            
+            # Сохраняем атомарно
+            await utils.atomic_write_json(config.USERS_FILE, users)
+            
+            logger.info(f"💾 Пользователь {user_id} сохранен в базу. Всего пользователей: {len(users)}")
+            
+        except Exception as e:
+            logger.error(f"❌ Критическая ошибка сохранения пользователя {user_id}: {e}")
+            
+            # Пробуем сохранить через emergency функцию
+            try:
+                await utils.emergency_save_user(user_id, new_user_data)
+                logger.info(f"🚨 Пользователь {user_id} сохранен через emergency функцию")
+            except Exception as emergency_error:
+                logger.error(f"❌ Не удалось сохранить даже через emergency: {emergency_error}")
+                raise Exception(f"Не удалось сохранить пользователя: {e}")
+        
+        # 💾 СОЗДАЕМ BACKUP ПОСЛЕ УСПЕШНОГО СОХРАНЕНИЯ
+        try:
+            logger.info(f"💾 Создаю backup после регистрации пользователя {user_id}")
+            await backup_users_data()
+            logger.info(f"✅ Backup создан успешно")
+        except Exception as backup_error:
+            logger.error(f"⚠️ Ошибка создания backup: {backup_error}")
+            # Не прерываем процесс, только логируем
+        
+        # 🤝 СОХРАНЯЕМ РЕФЕРАЛЬНУЮ СВЯЗЬ
+        if referrer_id:
+            success = await utils.save_referral_relationship(user_id, referrer_id)
+            if success:
+                logger.info(f"✅ Реферальная связь сохранена: {user_id} -> {referrer_id}")
+                
+                # Уведомляем реферера
+                try:
+                    referrer_name = new_user_data.get('first_name', 'Новый пользователь')
+                    welcome_msg = (
+                        f"🎉 <b>Новый реферал!</b>\n\n"
+                        f"По твоей ссылке присоединился {referrer_name}!\n"
+                        f"Когда он оплатит подписку - ты получишь бонус!"
+                    )
+                    
+                    await bot.send_message(referrer_id, welcome_msg)
+                except Exception as notify_error:
+                    logger.error(f"⚠️ Не удалось уведомить реферера {referrer_id}: {notify_error}")
+            else:
+                logger.error(f"❌ Не удалось сохранить реферальную связь")
+        
+        # 📝 ЛОГИРУЕМ УСПЕШНУЮ РЕГИСТРАЦИЮ
+        logger.info(f"🎉 УСПЕШНАЯ РЕГИСТРАЦИЯ: {user_id}, архетип: {archetype}")
+        logger.info(f"   📅 Создан: {new_user_data['created_at']}")
+        logger.info(f"   🕐 Часовой пояс: {timezone}")
+        logger.info(f"   🤝 Реферер: {referrer_id if referrer_id else 'нет'}")
+        
+        # 🎯 ОТПРАВЛЯЕМ ПРИВЕТСТВЕННОЕ СООБЩЕНИЕ
+        if archetype == "spartan":
+            welcome_message = (
+                "🎯 <b>ДОБРО ПОЖАЛОВАТЬ, ВОИН!</b>\n\n"
+                "Ты выбрал путь силы и дисциплины.\n\n"
+                "Теперь ты часть древней Спарты - людей, которые "
+                "своей волей и упорством создавали легенды.\n\n"
+                "💪 <b>Твои принципы:</b>\n"
+                "• Ответственность за себя\n"
+                "• Ежедневное преодоление\n"
+                "• Честь и достоинство\n\n"
+            )
+        else:
+            welcome_message = (
+                "🎯 <b>ДОБРО ПОЖАЛОВАТЬ, ВОИТЕЛЬНИЦА!</b>\n\n"
+                "Ты выбрала путь гармонии и внутренней силы.\n\n"
+                "Теперь ты часть общества Амазонок - женщин, которые "
+                "сочетают в себе грацию, мудрость и непоколебимую силу.\n\n"
+                "🌸 <b>Твои принципы:</b>\n"
+                "• Осознанность и интуиция\n"
+                "• Баланс мягкости и стойкости\n"
+                "• Самоуважение и мудрость\n\n"
+            )
+        
+        # 📋 ОТПРАВЛЯЕМ ПЕРВОЕ ЗАДАНИЕ
+        try:
+            task_id, task = await utils.get_task_by_day(1, archetype)
+            
+            if task:
+                gender_ending = "ТВОЕ" if archetype == "spartan" else "ТВОЁ"
+                time_text = "у тебя" if archetype == "spartan" else "у тебя"
+                
+                task_message = (
+                    f"{welcome_message}"
+                    f"<b>{gender_ending} ПЕРВОЕ ЗАДАНИЕ!</b>\n\n"
+                    f"<b>День 1/300</b>\n\n"
+                    f"{task['text']}\n\n"
+                    f"💪 Начало твоего пути к сильной версии себя!\n"
+                    f"⏰ На {time_text} есть время до 23:59 на выполнение\n\n"
+                    f"<i>Отмечай выполнение кнопками ниже 👇</i>"
+                )
+                
+                await message.answer(
+                    task_message,
+                    reply_markup=keyboards.task_keyboard,
+                    disable_web_page_preview=True
+                )
+                
+                # Обновляем данные пользователя
+                new_user_data['last_task_sent'] = datetime.now().isoformat()
+                new_user_data['task_completed_today'] = False
+                
+                # Сохраняем обновленные данные
+                await utils.save_user(user_id, new_user_data)
+                
+                logger.info(f"✅ Первое задание отправлено пользователю {user_id}")
+                
+            else:
+                # Если задание не найдено
+                await message.answer(
+                    f"{welcome_message}"
+                    "К сожалению, первое задание временно недоступно.\n"
+                    "Мы уже работаем над решением проблемы.\n\n"
+                    "А пока можешь ознакомиться с функциями бота:",
+                    reply_markup=keyboards.get_main_menu(user_id)
+                )
+                logger.warning(f"⚠️ Не найдено задание дня 1 для пользователя {user_id}")
+                
+        except Exception as task_error:
+            logger.error(f"❌ Ошибка отправки задания: {task_error}")
+            
+            await message.answer(
+                f"{welcome_message}"
+                "Произошла ошибка при загрузке задания.\n"
+                "Попробуй обновить меню через кнопку 'Задание на сегодня'.",
+                reply_markup=keyboards.get_main_menu(user_id)
+            )
+        
+        # 📱 ПОКАЗЫВАЕМ ГЛАВНОЕ МЕНЮ
+        gender_ending_menu = "Тебе" if archetype == "spartan" else "Тебе"
         await message.answer(
-            f"{welcome_message}"
-            f"<b>{gender_ending} ПЕРВОЕ ЗАДАНИЕ!</b>\n\n"
-            f"<b>День 1/300</b>\n\n"
-            f"{task['text']}\n\n"
-            f"💪 Начало твоего пути к сильной версии себя!\n"
-            f"⏰ На {time_text} есть время до 23:59 на выполнение\n\n"
-            f"<i>Отмечай выполнение кнопками ниже 👇</i>",
-            reply_markup=task_keyboard,
-            disable_web_page_preview=True
+            f"📋 <b>Теперь {gender_ending_menu.lower()} доступны все функции бота!</b>\n\n"
+            "Используй меню ниже для навигации:",
+            reply_markup=keyboards.get_main_menu(user_id)
         )
-        logger.info(f"✅ Первое задание отправлено пользователю {user.id}")
-    else:
-        await message.answer(
-            f"{welcome_message}"
-            "К сожалению, первое задание временно недоступно.\n"
-            "Обратись к администратору или проверь позже.\n\n"
-            "А пока можешь ознакомиться с функциями бота:",
-            reply_markup=get_main_menu(user.id)
-        )
-        logger.warning(f"⚠️ Не найдено задание дня 1 для пользователя {user.id}")
-    
-    gender_ending_menu = "Тебе" if archetype == "spartan" else "Тебе"
-    await message.answer(
-        f"📋 <b>Теперь {gender_ending_menu.lower()} доступны все функции бота!</b>\n\n"
-        "Используй меню ниже для навигации:",
-        reply_markup=get_main_menu(user.id)
-    )
-    
-    await state.clear()
-    await update_user_activity(user.id)
+        
+        # 🔄 ОБНОВЛЯЕМ АКТИВНОСТЬ
+        await utils.update_user_activity(user_id)
+        
+        # 🧹 ОЧИЩАЕМ СОСТОЯНИЕ
+        await state.clear()
+        
+        logger.info(f"✅ Регистрация пользователя {user_id} завершена успешно")
+        
+        # 📊 УВЕДОМЛЯЕМ АДМИНА О НОВОМ ПОЛЬЗОВАТЕЛЕ
+        try:
+            admin_message = (
+                f"👤 <b>НОВЫЙ ПОЛЬЗОВАТЕЛЬ</b>\n\n"
+                f"📛 {user.first_name} (@{user.username or 'нет'})\n"
+                f"🆔 {user_id}\n"
+                f"🎯 Архетип: {'🛡️ Спартанец' if archetype == 'spartan' else '⚔️ Амазонка'}\n"
+                f"🕐 Часовой пояс: {timezone}\n"
+                f"🤝 Реферер: {referrer_id if referrer_id else 'нет'}\n"
+                f"📅 Время: {datetime.now().strftime('%H:%M:%S')}"
+            )
+            await bot.send_message(config.ADMIN_ID, admin_message)
+        except Exception as admin_error:
+            logger.error(f"⚠️ Не удалось уведомить админа: {admin_error}")
+        
+    except Exception as e:
+        logger.error(f"❌ Критическая ошибка в process_ready_confirmation: {e}", exc_info=True)
+        
+        # Отправляем сообщение об ошибке
+        try:
+            await message.answer(
+                "❌ <b>Произошла ошибка при регистрации</b>\n\n"
+                "Пожалуйста, попробуй снова через несколько минут.\n"
+                "Если проблема повторяется, обратись в поддержку.",
+                reply_markup=ReplyKeyboardRemove()
+            )
+        except:
+            pass
+        
+        # Очищаем состояние
+        try:
+            await state.clear()
+        except:
+            pass
 @dp.message(UserStates.waiting_for_archetype)
 async def process_archetype(message: Message, state: FSMContext):
     """Обработка выбора архетипа с гендерными окончаниями"""

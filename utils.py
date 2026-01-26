@@ -97,10 +97,174 @@ async def get_user(user_id):
     return users.get(str(user_id))
 
 async def save_user(user_id, user_data):
-    """Сохраняет данные пользователя"""
-    users = await read_json(config.USERS_FILE)
-    users[str(user_id)] = user_data
-    await write_json(config.USERS_FILE, users)
+    """Сохраняет данные пользователя - АТОМАРНАЯ ВЕРСИЯ"""
+    users_file = str(config.USERS_FILE)
+    
+    async with file_lock_context(users_file):
+        try:
+            # Читаем текущие данные
+            users = await read_json(config.USERS_FILE)
+            if not isinstance(users, dict):
+                logger.error(f"❌ Ошибка: users не является словарем: {type(users)}")
+                users = {}
+            
+            # Обновляем данные пользователя
+            user_key = str(user_id)
+            old_data = users.get(user_key, {})
+            users[user_key] = user_data
+            
+            # Логируем изменения (опционально для отладки)
+            if old_data.get('first_name') != user_data.get('first_name') or \
+               old_data.get('subscription_end') != user_data.get('subscription_end'):
+                logger.info(f"📝 Сохранение {user_id}: {user_data.get('first_name')}")
+            
+            # Записываем обратно
+            await write_json(config.USERS_FILE, users)
+            logger.debug(f"✅ Пользователь {user_id} сохранен (всего: {len(users)})")
+            
+        except Exception as e:
+            logger.error(f"❌ Критическая ошибка сохранения пользователя {user_id}: {e}")
+            # Создаем backup при ошибке
+            await emergency_backup(users if 'users' in locals() else {}, str(e))
+            raise
+
+async def safe_delete_user(user_id: int, reason: str = "unknown", actor_id: Optional[int] = None) -> bool:
+    """
+    Безопасное удаление пользователя с логами и проверками
+    
+    Args:
+        user_id: ID удаляемого пользователя
+        reason: Причина удаления
+        actor_id: ID того, кто инициировал удаление (None если пользователь сам)
+    
+    Returns:
+        bool: True если удаление успешно
+    """
+    users_file = str(config.USERS_FILE)
+    
+    async with file_lock_context(users_file):
+        try:
+            # Читаем текущие данные
+            users = await read_json(config.USERS_FILE)
+            if not isinstance(users, dict):
+                logger.error(f"❌ Ошибка: users не является словарем")
+                return False
+            
+            user_key = str(user_id)
+            
+            if user_key not in users:
+                logger.warning(f"⚠️ Пользователь {user_id} не найден при удалении")
+                return False
+            
+            # Получаем данные пользователя перед удалением
+            user_data = users[user_key]
+            user_name = user_data.get('first_name', 'Неизвестно')
+            has_subscription = await is_subscription_active(user_data)
+            subscription_end = user_data.get('subscription_end')
+            referrals_count = len(user_data.get('referrals', []))
+            
+            # Логируем удаление
+            logger.warning(
+                f"🗑️ УДАЛЕНИЕ ПОЛЬЗОВАТЕЛЯ:\n"
+                f"   👤 ID: {user_id}\n"
+                f"   📛 Имя: {user_name}\n"
+                f"   📅 Дата регистрации: {user_data.get('created_at', 'неизвестно')}\n"
+                f"   💎 Подписка активна: {has_subscription}\n"
+                f"   📅 Окончание подписки: {subscription_end}\n"
+                f"   👥 Рефералов: {referrals_count}\n"
+                f"   🎯 Причина: {reason}\n"
+                f"   👤 Инициатор: {actor_id if actor_id else 'self'}"
+            )
+            
+            # Сохраняем backup удаляемого пользователя
+            await save_user_backup(user_id, user_data, reason)
+            
+            # Удаляем пользователя
+            del users[user_key]
+            
+            # Сохраняем обновленные данные
+            await write_json(config.USERS_FILE, users)
+            
+            logger.info(f"✅ Пользователь {user_id} удален. Осталось пользователей: {len(users)}")
+            
+            # Уведомляем админа (только если это не команда админа)
+            if actor_id != config.ADMIN_ID and reason != "admin_force_reset":  
+                try:
+                    admin_message = (
+                        f"⚠️ <b>УДАЛЕНИЕ ПОЛЬЗОВАТЕЛЯ</b>\n\n"
+                        f"👤 {user_name} (ID: {user_id})\n"
+                        f"📅 Был в системе с: {user_data.get('created_at', 'неизвестно')[:10]}\n"
+                        f"💎 Подписка: {'Активна' if has_subscription else 'Не активна'}\n"
+                        f"👥 Рефералов: {referrals_count}\n"
+                        f"🎯 Причина: {reason}\n"
+                        f"👤 Инициатор: {'Пользователь' if actor_id == user_id else f'ID {actor_id}'}"
+                    )
+                    # Импортируем bot внутри функции чтобы избежать циклического импорта
+                    from bot import bot
+                    await bot.send_message(config.ADMIN_ID, admin_message)
+                except Exception as e:
+                    logger.error(f"❌ Ошибка уведомления админа: {e}")
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка удаления пользователя {user_id}: {e}")
+            return False
+
+
+async def save_user_backup(user_id: int, user_data: dict, reason: str):
+    """
+    Сохраняет backup удаляемого пользователя в отдельный файл
+    """
+    try:
+        backup_dir = "/home/botuser/user_backups"
+        os.makedirs(backup_dir, exist_ok=True)
+        
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"{backup_dir}/user_{user_id}_{timestamp}.json"
+        
+        backup_data = {
+            'user_id': user_id,
+            'user_data': user_data,
+            'deleted_at': datetime.now().isoformat(),
+            'reason': reason,
+            'backup_timestamp': timestamp
+        }
+        
+        async with aiofiles.open(filename, 'w', encoding='utf-8') as f:
+            await f.write(json.dumps(backup_data, ensure_ascii=False, indent=2))
+        
+        logger.info(f"📦 Backup пользователя {user_id} сохранен: {filename}")
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка создания backup пользователя {user_id}: {e}")
+
+
+async def emergency_backup(data: dict, error_msg: str):
+    """
+    Аварийный backup при ошибке записи
+    """
+    try:
+        backup_dir = "/home/botuser/emergency_backups"
+        os.makedirs(backup_dir, exist_ok=True)
+        
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"{backup_dir}/emergency_{timestamp}.json"
+        
+        backup_data = {
+            'data': data,
+            'timestamp': timestamp,
+            'error': error_msg,
+            'users_count': len(data) if isinstance(data, dict) else 0
+        }
+        
+        async with aiofiles.open(filename, 'w', encoding='utf-8') as f:
+            await f.write(json.dumps(backup_data, ensure_ascii=False, indent=2))
+        
+        logger.error(f"🚨 Аварийный backup создан: {filename}")
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка создания аварийного backup: {e}")
 
 async def get_all_users():
     """Получает всех пользователей"""
@@ -112,6 +276,42 @@ async def update_user_activity(user_id):
     if user_data:
         user_data['last_activity'] = datetime.now().isoformat()
         await save_user(user_id, user_data)
+
+
+# ========== СИСТЕМА БЕЗОПАСНОЙ РАБОТЫ С ФАЙЛАМИ ==========
+
+import asyncio
+from contextlib import asynccontextmanager
+
+# Словарь для блокировок файлов
+_file_locks = {}
+
+def get_file_lock(filename: str) -> asyncio.Lock:
+    """Получает блокировку для конкретного файла"""
+    if filename not in _file_locks:
+        _file_locks[filename] = asyncio.Lock()
+    return _file_locks[filename]
+
+@asynccontextmanager
+async def file_lock_context(filename: str):
+    """Контекстный менеджер для блокировки файла"""
+    lock = get_file_lock(filename)
+    await lock.acquire()
+    try:
+        yield
+    finally:
+        lock.release()
+
+async def atomic_read_json(file_path):
+    """Атомарное чтение JSON файла с блокировкой"""
+    async with file_lock_context(str(file_path)):
+        return await read_json(file_path)
+
+async def atomic_write_json(file_path, data):
+    """Атомарная запись JSON файла с блокировкой"""
+    async with file_lock_context(str(file_path)):
+        await write_json(file_path, data)
+
 
 # ========== ФУНКЦИИ РАБОТЫ С ЗАДАНИЯМИ ==========
 
