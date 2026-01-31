@@ -588,7 +588,7 @@ async def send_task_to_user(user_id: int, user_data: dict):
             f"📋 <b>Задание на сегодня</b>\n\n"
             f"<b>День {task['day']}/300</b>\n\n"
             f"{task['text']}\n\n"
-            f"⏰ <b>До 23:59 на выполнение</b>\n\n"
+            f"⏰ <b>Выполни задание до 23:59</b>\n\n"
             f"<i>Встретимся завтра в 9:00 ⏰</i>"
         )
         
@@ -1626,7 +1626,7 @@ async def format_task_message(task_data, day, task_type):
         f"📋 <b>Задание на сегодня</b>\n\n"
         f"<b>День {day}/300</b>\n\n"
         f"{task_data['text']}\n\n"
-        f"⏰ <b>До 23:59 на выполнение</b>\n\n"
+        f"⏰ <b>Выполни задание до 23:59</b>\n\n"
         f"<i>Отмечай выполнение кнопками ниже 👇</i>"
     )
 
@@ -2328,6 +2328,7 @@ async def show_referral_from_legion(callback: CallbackQuery):
 # В обработчике task_completed обновим логику:
 # ЗАМЕНИТЬ весь обработчик на упрощенную версию:
 # В обработчике task_completed обновляем логику (уже есть в коде):
+
 @dp.message(F.text == "✅ ГОТОВО")
 async def task_completed(message: Message):
     user = message.from_user
@@ -2348,8 +2349,27 @@ async def task_completed(message: Message):
     # Сохраняем старый ранг для сравнения
     old_rank = user_data.get('rank', 'putnik')
     
-    # Получаем гендерные окончания
-    gender = await utils.get_gender_ending(user_data)
+    # Получаем гендерные окончания - БЕЗОПАСНАЯ ВЕРСИЯ
+    try:
+        gender = await utils.get_gender_ending(user_data)
+        # Проверяем наличие ключей
+        if 'verb_finished' not in gender:
+            gender['verb_finished'] = 'завершил' if user_data.get('archetype', 'spartan') == 'spartan' else 'завершила'
+        if 'ending_a' not in gender:
+            gender['ending_a'] = '' if user_data.get('archetype', 'spartan') == 'spartan' else 'а'
+        if 'ending' not in gender:
+            gender['ending'] = '' if user_data.get('archetype', 'spartan') == 'spartan' else 'а'
+        if 'ending_te' not in gender:
+            gender['ending_te'] = '' if user_data.get('archetype', 'spartan') == 'spartan' else 'а'
+    except Exception as e:
+        logger.error(f"❌ Ошибка получения гендерных окончаний: {e}")
+        # Значения по умолчанию
+        gender = {
+            'verb_finished': 'завершил',
+            'ending_a': '',
+            'ending': '',
+            'ending_te': ''
+        }
     
     # Проверяем текущие задания
     todays_tasks = await utils.get_todays_tasks(user_data)
@@ -2376,10 +2396,11 @@ async def task_completed(message: Message):
         # Обновляем счетчик
         user_data['completed_tasks_in_trial'] = new_trial_count
         
-        # Проверяем, закончился ли пробный период (3 задания)
+        # Проверяем, закончился ли пробный период (3 задания) - только для информации
+        # Но фактическое завершение пробного периода теперь через 3 дня с регистрации
         if new_trial_count >= 3:
             user_data['trial_finished'] = True
-            logger.info(f"🎯 Пробный период завершен для пользователя {user_id}")
+            logger.info(f"🎯 Пользователь {user_id} выполнил 3 задания в пробном периоде")
     
     # Обновляем ранг и получаем результат
     rank_updated = await utils.update_user_rank(user_data)
@@ -2413,55 +2434,9 @@ async def task_completed(message: Message):
         reply_markup=keyboards.get_main_menu(user_id)
     )
     
-    # 🔥 ВАЖНОЕ ДОБАВЛЕНИЕ: НЕМЕДЛЕННОЕ УВЕДОМЛЕНИЕ О ЗАВЕРШЕНИИ ПРОБНОГО ПЕРИОДА
-    if in_trial:
-        trial_tasks = user_data.get('completed_tasks_in_trial', 0)
-        
-        # Проверяем СРАЗУ после выполнения 3-го задания
-        if trial_tasks >= 3:
-            logger.info(f"🎉 Отправляю уведомление о конце пробного периода пользователю {user_id}")
-            
-            trial_end_message = (
-                f"🎯 <b>Ты {gender['verb_finished']} вводный этап!</b>\n\n"
-                f"За 3 дня ты получил{gender['ending_a']} представление о том, как работает система «300 ПИНКОВ».\n\n"
-                f"💪 <b>Что дальше?</b>\n"
-                f"• Ежедневные задания для развития силы воли\n"
-                f"• Система рангов и достижений\n" 
-                f"• Поддержка комьюнити\n"
-                f"• 297 дней роста впереди!\n\n"
-                f"🔥 <b>Продолжи путь к сильной версии себя!</b>"
-            )
-            
-            from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-            
-            subscription_keyboard = InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [InlineKeyboardButton(
-                        text="💎 Активировать подписку", 
-                        callback_data="activate_subscription_after_trial"
-                    )],
-                    [InlineKeyboardButton(
-                        text="📊 Мой прогресс", 
-                        callback_data="show_progress_after_trial"
-                    )]
-                ]
-            )
-            
-            await message.answer(trial_end_message, reply_markup=subscription_keyboard)
-            
-            # Уведомляем админа о завершении пробного периода
-            try:
-                admin_message = (
-                    f"🎯 <b>Пользователь завершил пробный период</b>\n\n"
-                    f"👤 {user.first_name} (@{user.username or 'нет'})\n"
-                    f"🆔 {user_id}\n"
-                    f"📅 Дата регистрации: {user_data.get('created_at', 'неизвестно')[:10]}\n"
-                    f"✅ Выполнено заданий: {trial_tasks}\n\n"
-                    f"Отправлено предложение о покупке подписки."
-                )
-                await bot.send_message(config.ADMIN_ID, admin_message)
-            except Exception as e:
-                logger.error(f"Ошибка уведомления админа о пробном периоде: {e}")
+    # ⚠️ УДАЛЕНО: НЕ отправляем уведомление о завершении пробного периода здесь
+    # Теперь это делает автоматическая система уведомлений SubscriptionNotifications
+    # которая проверяет всех пользователей ежедневно в 11:00
     
     await utils.update_user_activity(user_id)
 # ОБНОВЛЯЕМ обработчик "Подписка 💎"
@@ -2572,41 +2547,6 @@ async def skip_task(message: Message):
         reply,
         reply_markup=keyboards.get_main_menu(user_id)
     )
-    
-    # 🔥 ВАЖНОЕ ДОБАВЛЕНИЕ: Уведомление о конце пробного периода при пропуске
-    if in_trial:
-        trial_tasks = user_data.get('completed_tasks_in_trial', 0)
-        
-        if trial_tasks >= 3:
-            logger.info(f"🎉 Отправляю уведомление о конце пробного периода после пропуска пользователю {user_id}")
-            
-            trial_end_message = (
-                f"🎯 <b>Ты {gender['verb_finished']} вводный этап!</b>\n\n"
-                f"За 3 дня ты получил{gender['ending_a']} представление о том, как работает система «300 ПИНКОВ».\n\n"
-                f"💪 <b>Что дальше?</b>\n"
-                f"• Ежедневные задания для развития силы воли\n"
-                f"• Система рангов и достижений\n" 
-                f"• Поддержка комьюнити\n"
-                f"• 297 дней роста впереди!\n\n"
-                f"🔥 <b>Продолжи путь к сильной версии себя!</b>"
-            )
-            
-            from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-            
-            subscription_keyboard = InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [InlineKeyboardButton(
-                        text="💎 Активировать подписку", 
-                        callback_data="activate_subscription_after_trial"
-                    )],
-                    [InlineKeyboardButton(
-                        text="📊 Мой прогресс", 
-                        callback_data="show_progress_after_trial"
-                    )]
-                ]
-            )
-            
-            await message.answer(trial_end_message, reply_markup=subscription_keyboard)
     
     await utils.update_user_activity(user_id)
 
@@ -3244,7 +3184,7 @@ async def activate_subscription_after_payment(payment_data, callback):
                 f"📋 <b>Новое задание!</b>\n\n"
                 f"<b>День {next_day}/300</b>\n\n"
                 f"{task['text']}\n\n"
-                f"⏰ <b>До 23:59 на выполнение</b>\n\n"
+                f"⏰ <b>Выполни задание до 23:59</b>\n\n"
                 f"<i>Отмечай выполнение кнопками ниже 👇</i>"
             )
             
@@ -4863,17 +4803,111 @@ class SubscriptionNotifications:
         return total_notifications
     
     @staticmethod
+    async def send_subscription_about_to_expire_notification(user_id: int, user_data: dict, days_left: int):
+        """Уведомление о скором окончании подписки"""
+        try:
+            gender = await utils.get_gender_ending(user_data)
+            
+            if days_left == 3:
+                message_text = (
+                    f"⏰ <b>ПОДПИСКА ЗАКАНЧИВАЕТСЯ ЧЕРЕЗ 3 ДНЯ!</b>\n\n"
+                    f"До окончания подписки осталось всего 3 дня.\n\n"
+                    f"💡 <b>Рекомендации:</b>\n"
+                    f"• Продли подписку заранее чтобы не прерывать прогресс\n"
+                    f"• Не теряй достигнутые результаты\n"
+                    f"• Продолжай развивать дисциплину\n\n"
+                    f"🔥 <b>Продли подписку сейчас и продолжай путь без перерывов!</b>"
+                )
+            elif days_left == 1:
+                message_text = (
+                    f"⚠️ <b>ПОДПИСКА ЗАКАНЧИВАЕТСЯ ЗАВТРА!</b>\n\n"
+                    f"Последний день активной подписки. Завтра доступ к заданиям будет приостановлен.\n\n"
+                    f"🎯 <b>Твой текущий прогресс:</b>\n"
+                    f"• Выполнено заданий: {user_data.get('completed_tasks', 0)}/300\n"
+                    f"• Ранг: {user_data.get('rank', 'путник')}\n"
+                    f"• Привилегии сохранены\n\n"
+                    f"💪 <b>Продли подписку сегодня и сохрани все достижения!</b>"
+                )
+            else:
+                message_text = (
+                    f"📅 <b>ПОДПИСКА ЗАКАНЧИВАЕТСЯ ЧЕРЕЗ {days_left} ДНЕЙ</b>\n\n"
+                    f"Рекомендуем продлить подписку заранее чтобы не прерывать челлендж."
+                )
+            
+            from keyboards import get_payment_keyboard
+            keyboard = get_payment_keyboard()
+            
+            await safe_send_message(user_id, message_text, reply_markup=keyboard)
+            logger.info(f"✅ Уведомление об окончании подписки ({days_left} дней) отправлено пользователю {user_id}")
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка отправки уведомления о конце подписки {user_id}: {e}")
+
+    @staticmethod
+    async def should_notify_subscription_about_to_expire(user_data: dict) -> bool:
+        """Нужно ли уведомить о приближающемся окончании подписки"""
+        try:
+            # Проверяем активную подписку
+            if not await utils.is_subscription_active(user_data):
+                return False
+            
+            # Проверяем, когда уже уведомляли
+            if user_data.get('subscription_expire_notified'):
+                return False
+            
+            subscription_end = user_data.get('subscription_end')
+            if not subscription_end:
+                return False
+            
+            end_date = datetime.fromisoformat(subscription_end)
+            days_left = (end_date - datetime.now()).days
+            
+            # Уведомляем за 3 дня и за 1 день до окончания
+            return days_left in [1, 3]
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка проверки окончания подписки: {e}")
+            return False
+    
+    @staticmethod
+    async def get_days_until_subscription_end(user_data: dict) -> int:
+        """Возвращает сколько дней осталось до окончания подписки"""
+        try:
+            subscription_end = user_data.get('subscription_end')
+            if not subscription_end:
+                return 0
+            
+            end_date = datetime.fromisoformat(subscription_end)
+            days_left = (end_date - datetime.now()).days
+            return max(0, days_left)
+            
+        except:
+            return 0
+
+    @staticmethod
     async def check_user_for_notifications(user_id: int, user_data: dict) -> bool:
         """Проверяет одного пользователя и отправляет нужные уведомления"""
         try:
             # Получаем гендерные окончания
             gender = await utils.get_gender_ending(user_data)
             
-            # 🔥 1. Пользователи, прошедшие пробный период (3 задания)
-            if await SubscriptionNotifications.should_notify_trial_completed(user_data):
-                await SubscriptionNotifications.send_trial_completed_notification(user_id, user_data, gender)
-                # Помечаем как уведомленного
-                user_data['trial_completed_notified'] = True
+            # 🔥 0. Проверка на приближающееся окончание активной подписки
+            if await SubscriptionNotifications.should_notify_subscription_about_to_expire(user_data):
+                days_left = await SubscriptionNotifications.get_days_until_subscription_end(user_data)
+                await SubscriptionNotifications.send_subscription_about_to_expire_notification(
+                    user_id, user_data, days_left
+                )
+                user_data['subscription_expire_notified'] = True
+                user_data['last_subscription_notification'] = datetime.now().isoformat()
+                await utils.save_user(user_id, user_data)
+                return True
+            
+            # 🔥 1. Проверка завершения пробного периода (3 дня с регистрации)
+            if await SubscriptionNotifications.should_notify_trial_ended(user_data):
+                await SubscriptionNotifications.send_trial_ended_notification(user_id, user_data, gender)
+                # Помечаем как уведомленного и завершаем пробный период
+                user_data['trial_ended_notified'] = True
+                user_data['trial_finished'] = True
                 user_data['last_subscription_notification'] = datetime.now().isoformat()
                 await utils.save_user(user_id, user_data)
                 return True
@@ -4914,38 +4948,24 @@ class SubscriptionNotifications:
         except Exception as e:
             logger.error(f"❌ Ошибка проверки уведомлений для {user_id}: {e}")
             return False
-    
+        
     @staticmethod
-    async def should_notify_trial_completed(user_data: dict) -> bool:
-        """Нужно ли уведомить о завершении пробного периода"""
+    async def should_notify_trial_ended(user_data: dict) -> bool:
+        """Нужно ли уведомить об окончании пробного периода (3 дня с регистрации)"""
         try:
-            # Пользователь в пробном периоде?
-            in_trial = await utils.is_in_trial_period(user_data)
-            if not in_trial:
+            # Если уже уведомляли или пробный период уже закончен
+            if user_data.get('trial_ended_notified') or user_data.get('trial_finished'):
                 return False
             
-            # Выполнил 3 задания?
-            trial_tasks = user_data.get('completed_tasks_in_trial', 0)
-            if trial_tasks < 3:
-                return False
+            # Проверяем пробный период
+            created_at = datetime.fromisoformat(user_data.get('created_at', datetime.now().isoformat()))
+            days_passed = (datetime.now() - created_at).days
             
-            # Еще не уведомляли?
-            if user_data.get('trial_completed_notified'):
-                return False
-            
-            # Проверяем, когда последний раз уведомляли
-            last_notification = user_data.get('last_subscription_notification')
-            if last_notification:
-                last_date = datetime.fromisoformat(last_notification)
-                days_since_last = (datetime.now() - last_date).days
-                # Не уведомляем чаще чем раз в 3 дня
-                if days_since_last < 3:
-                    return False
-            
-            return True
+            # Пробный период длится 3 дня, уведомляем на 3-й день
+            return days_passed == 3
             
         except Exception as e:
-            logger.error(f"❌ Ошибка проверки пробного периода: {e}")
+            logger.error(f"❌ Ошибка проверки окончания пробного периода: {e}")
             return False
     
     @staticmethod
@@ -5041,12 +5061,36 @@ class SubscriptionNotifications:
             return False
         
     @staticmethod
-    async def send_trial_completed_notification(user_id: int, user_data: dict, gender: dict):
-        """Уведомление о завершении пробного периода"""
+    async def send_trial_ended_notification(user_id: int, user_data: dict, gender: dict):
+        """Уведомление об окончании пробного периода (3 дня с регистрации)"""
         try:
+            # Считаем сколько заданий выполнено за пробный период
+            completed_tasks_in_trial = user_data.get('completed_tasks_in_trial', 0)
+            
+            # Определяем правильные окончания
+            ending = gender.get('ending', '')
+            verb_action = 'выполнил' if ending == '' else 'выполнила'
+            got_ending = '' if ending == '' else 'а'
+            
             message_text = (
                 f"🎯 <b>Пробный период завершен!</b>\n\n"
-                f"Ты {gender['verb_finished']} 3 пробных задания и получил{gender['ending_a']} представление о системе.\n\n"
+                f"За 3 дня ты {verb_action} "
+                f"{completed_tasks_in_trial} заданий и получил{got_ending} "
+                f"представление о системе «300 ПИНКОВ».\n\n"
+            )
+            
+            if completed_tasks_in_trial == 0:
+                message_text += (
+                    f"💡 <b>Ты еще не попробовал{ending} задания!</b>\n"
+                    f"Это отличный шанс начать развивать дисциплину.\n\n"
+                )
+            elif completed_tasks_in_trial < 3:
+                message_text += (
+                    f"💡 <b>Ты попробовал{ending} {completed_tasks_in_trial} задания!</b>\n"
+                    f"Продолжай развивать силу воли и дисциплину.\n\n"
+                )
+            
+            message_text += (
                 f"💪 <b>Что тебя ждет в полной версии:</b>\n"
                 f"• Ежедневные задания для развития силы воли\n"
                 f"• Система рангов и достижений\n"
@@ -5064,7 +5108,7 @@ class SubscriptionNotifications:
             logger.info(f"✅ Уведомление о конце пробного периода отправлено пользователю {user_id}")
             
         except Exception as e:
-            logger.error(f"❌ Ошибка отправки уведомления о пробном периоде {user_id}: {e}")
+            logger.error(f"❌ Ошибка отправки уведомления о пробном периоде {user_id}: {e}")    
     
     @staticmethod
     async def send_subscription_ended_notification(user_id: int, user_data: dict, gender: dict):
@@ -6494,7 +6538,7 @@ async def process_invite_code(message: Message, state: FSMContext):
                     f"📋 <b>Новое задание!</b>\n\n"
                     f"<b>День {next_day}/300</b>\n\n"
                     f"{task['text']}\n\n"
-                    f"⏰ <b>До 23:59 на выполнение</b>\n\n"
+                    f"⏰ <b>Выполни задание до 23:59</b>\n\n"
                     f"<i>Отмечай выполнение кнопками ниже 👇</i>"
                 )
                 
@@ -8701,17 +8745,6 @@ async def main():
             timezone=config.TIMEZONE
         ),
         id="quick_subscription_check"
-    )
-    
-    # 🔥 Периодические напоминания (раз в 3 дня в 15:00)
-    scheduler.add_job(
-        lambda: SubscriptionNotifications.check_all_users_for_subscription_notifications(),
-        trigger=CronTrigger(
-            hour=15, minute=0,
-            day="*/3",  # Каждые 3 дня
-            timezone=config.TIMEZONE
-        ),
-        id="periodic_reminders"
     )
     
     scheduler.start()

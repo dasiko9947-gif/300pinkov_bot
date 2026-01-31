@@ -588,44 +588,39 @@ async def add_subscription_days(user_data, days):
     logger.info(f"📅 Новая дата окончания: {new_end.isoformat()}")
     
     return user_data
-async def is_in_trial_period(user_data):
-    """Проверяет, находится ли пользователь в БЕСПЛАТНОМ пробном периоде (3 дня)"""
-    if not user_data:
-        return False
-    
-    # Если у пользователя уже есть платная подписка - не в пробном
-    if user_data.get('subscription_end'):
-        try:
-            sub_end = datetime.fromisoformat(user_data['subscription_end'])
-            if datetime.now() < sub_end:
-                return False  # Уже есть активная платная подписка
-        except:
-            pass
-    
-    created_at_str = user_data.get('created_at')
-    if not created_at_str:
-        return False
-    
+
+async def is_in_trial_period(user_data: dict) -> bool:
+    """Проверяет, находится ли пользователь в пробном периоде (3 дня с регистрации)"""
     try:
-        created_at = datetime.fromisoformat(created_at_str)
+        # Если пользователь уже закончил пробный период
+        if user_data.get('trial_finished'):
+            return False
+            
+        created_at = datetime.fromisoformat(user_data.get('created_at', datetime.now().isoformat()))
         days_passed = (datetime.now() - created_at).days
         
-        # БЕСПЛАТНЫЙ пробный период - 3 дня после регистрации
-        # НЕ требуется оплата 1 рубля!
+        # Пробный период длится 3 дня с момента регистрации
         return days_passed < 3
-    except Exception:
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка проверки пробного периода: {e}")
         return False
-async def get_trial_days_left(user_data):
+
+async def get_trial_days_left(user_data: dict) -> int:
     """Возвращает количество оставшихся дней пробного периода"""
-    if not user_data or not user_data.get('created_at'):
-        return 0
-    
     try:
-        created_at = datetime.fromisoformat(user_data['created_at'])
+        if user_data.get('trial_finished'):
+            return 0
+            
+        created_at = datetime.fromisoformat(user_data.get('created_at', datetime.now().isoformat()))
         days_passed = (datetime.now() - created_at).days
-        days_left = 3 - days_passed
-        return max(0, days_left)
-    except:
+        
+        if days_passed >= 3:
+            return 0
+        return 3 - days_passed
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка расчета дней пробного периода: {e}")
         return 0
 
 # ========== СИСТЕМА РАНГОВ ==========
@@ -1494,31 +1489,29 @@ async def get_all_invite_codes(include_hidden=False):
 
 # ========== ГЕНДЕРНЫЕ ОКОНЧАНИЯ ДЛЯ АРХЕТИПОВ ==========
 
-async def get_gender_ending(user_data):
-    """Возвращает правильные окончания в зависимости от архетипа"""
+async def get_gender_ending(user_data: dict) -> dict:
+    """Определяет гендерные окончания для пользователя"""
     archetype = user_data.get('archetype', 'spartan')
     
-    if archetype == 'amazon':
+    if archetype == 'spartan':
         return {
-            'subject': 'ты',           # вместо "ты" (нейтрально, но можно заменить)
-            'verb_action': 'сделала',  # сделал/сделала
-            'verb_started': 'начала',  # начал/начала
-            'adjective': 'готова',     # готов/готова
-            'person': 'Амазонка',      # обращение
-            'pronoun': 'твоя',         # твой/твоя
-            'ending_a': 'а',           # окончание для женского рода
-            'ending_la': 'ла',         # прошедшее время жен.род
-        }
-    else:  # spartan по умолчанию
-        return {
-            'subject': 'ты',
-            'verb_action': 'сделал',
-            'verb_started': 'начал',
-            'adjective': 'готов',
             'person': 'Спартанец',
-            'pronoun': 'твой',
-            'ending_a': '',
-            'ending_la': 'л',
+            'verb_action': 'сделал',
+            'verb_finished': 'завершил',
+            'verb_activated': 'активировал',
+            'ending': '',      # мужской род
+            'ending_a': '',    # мужской род для "получил"
+            'ending_te': ''    # мужской род для "продли"
+        }
+    else:
+        return {
+            'person': 'Амазонка',
+            'verb_action': 'сделала',
+            'verb_finished': 'завершила',
+            'verb_activated': 'активировала',
+            'ending': 'а',     # женский род
+            'ending_a': 'а',   # женский род для "получила"
+            'ending_te': 'а'   # женский род для "продлила"
         }
 
 async def format_gender_text(text, user_data):
