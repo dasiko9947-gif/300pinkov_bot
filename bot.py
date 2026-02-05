@@ -4803,111 +4803,17 @@ class SubscriptionNotifications:
         return total_notifications
     
     @staticmethod
-    async def send_subscription_about_to_expire_notification(user_id: int, user_data: dict, days_left: int):
-        """Уведомление о скором окончании подписки"""
-        try:
-            gender = await utils.get_gender_ending(user_data)
-            
-            if days_left == 3:
-                message_text = (
-                    f"⏰ <b>ПОДПИСКА ЗАКАНЧИВАЕТСЯ ЧЕРЕЗ 3 ДНЯ!</b>\n\n"
-                    f"До окончания подписки осталось всего 3 дня.\n\n"
-                    f"💡 <b>Рекомендации:</b>\n"
-                    f"• Продли подписку заранее чтобы не прерывать прогресс\n"
-                    f"• Не теряй достигнутые результаты\n"
-                    f"• Продолжай развивать дисциплину\n\n"
-                    f"🔥 <b>Продли подписку сейчас и продолжай путь без перерывов!</b>"
-                )
-            elif days_left == 1:
-                message_text = (
-                    f"⚠️ <b>ПОДПИСКА ЗАКАНЧИВАЕТСЯ ЗАВТРА!</b>\n\n"
-                    f"Последний день активной подписки. Завтра доступ к заданиям будет приостановлен.\n\n"
-                    f"🎯 <b>Твой текущий прогресс:</b>\n"
-                    f"• Выполнено заданий: {user_data.get('completed_tasks', 0)}/300\n"
-                    f"• Ранг: {user_data.get('rank', 'путник')}\n"
-                    f"• Привилегии сохранены\n\n"
-                    f"💪 <b>Продли подписку сегодня и сохрани все достижения!</b>"
-                )
-            else:
-                message_text = (
-                    f"📅 <b>ПОДПИСКА ЗАКАНЧИВАЕТСЯ ЧЕРЕЗ {days_left} ДНЕЙ</b>\n\n"
-                    f"Рекомендуем продлить подписку заранее чтобы не прерывать челлендж."
-                )
-            
-            from keyboards import get_payment_keyboard
-            keyboard = get_payment_keyboard()
-            
-            await safe_send_message(user_id, message_text, reply_markup=keyboard)
-            logger.info(f"✅ Уведомление об окончании подписки ({days_left} дней) отправлено пользователю {user_id}")
-            
-        except Exception as e:
-            logger.error(f"❌ Ошибка отправки уведомления о конце подписки {user_id}: {e}")
-
-    @staticmethod
-    async def should_notify_subscription_about_to_expire(user_data: dict) -> bool:
-        """Нужно ли уведомить о приближающемся окончании подписки"""
-        try:
-            # Проверяем активную подписку
-            if not await utils.is_subscription_active(user_data):
-                return False
-            
-            # Проверяем, когда уже уведомляли
-            if user_data.get('subscription_expire_notified'):
-                return False
-            
-            subscription_end = user_data.get('subscription_end')
-            if not subscription_end:
-                return False
-            
-            end_date = datetime.fromisoformat(subscription_end)
-            days_left = (end_date - datetime.now()).days
-            
-            # Уведомляем за 3 дня и за 1 день до окончания
-            return days_left in [1, 3]
-            
-        except Exception as e:
-            logger.error(f"❌ Ошибка проверки окончания подписки: {e}")
-            return False
-    
-    @staticmethod
-    async def get_days_until_subscription_end(user_data: dict) -> int:
-        """Возвращает сколько дней осталось до окончания подписки"""
-        try:
-            subscription_end = user_data.get('subscription_end')
-            if not subscription_end:
-                return 0
-            
-            end_date = datetime.fromisoformat(subscription_end)
-            days_left = (end_date - datetime.now()).days
-            return max(0, days_left)
-            
-        except:
-            return 0
-
-    @staticmethod
     async def check_user_for_notifications(user_id: int, user_data: dict) -> bool:
         """Проверяет одного пользователя и отправляет нужные уведомления"""
         try:
             # Получаем гендерные окончания
             gender = await utils.get_gender_ending(user_data)
             
-            # 🔥 0. Проверка на приближающееся окончание активной подписки
-            if await SubscriptionNotifications.should_notify_subscription_about_to_expire(user_data):
-                days_left = await SubscriptionNotifications.get_days_until_subscription_end(user_data)
-                await SubscriptionNotifications.send_subscription_about_to_expire_notification(
-                    user_id, user_data, days_left
-                )
-                user_data['subscription_expire_notified'] = True
-                user_data['last_subscription_notification'] = datetime.now().isoformat()
-                await utils.save_user(user_id, user_data)
-                return True
-            
-            # 🔥 1. Проверка завершения пробного периода (3 дня с регистрации)
-            if await SubscriptionNotifications.should_notify_trial_ended(user_data):
-                await SubscriptionNotifications.send_trial_ended_notification(user_id, user_data, gender)
-                # Помечаем как уведомленного и завершаем пробный период
-                user_data['trial_ended_notified'] = True
-                user_data['trial_finished'] = True
+            # 🔥 1. Пользователи, прошедшие пробный период (3 задания)
+            if await SubscriptionNotifications.should_notify_trial_completed(user_data):
+                await SubscriptionNotifications.send_trial_completed_notification(user_id, user_data, gender)
+                # Помечаем как уведомленного
+                user_data['trial_completed_notified'] = True
                 user_data['last_subscription_notification'] = datetime.now().isoformat()
                 await utils.save_user(user_id, user_data)
                 return True
@@ -4948,24 +4854,38 @@ class SubscriptionNotifications:
         except Exception as e:
             logger.error(f"❌ Ошибка проверки уведомлений для {user_id}: {e}")
             return False
-        
+    
     @staticmethod
-    async def should_notify_trial_ended(user_data: dict) -> bool:
-        """Нужно ли уведомить об окончании пробного периода (3 дня с регистрации)"""
+    async def should_notify_trial_completed(user_data: dict) -> bool:
+        """Нужно ли уведомить о завершении пробного периода"""
         try:
-            # Если уже уведомляли или пробный период уже закончен
-            if user_data.get('trial_ended_notified') or user_data.get('trial_finished'):
+            # Пользователь в пробном периоде?
+            in_trial = await utils.is_in_trial_period(user_data)
+            if not in_trial:
                 return False
             
-            # Проверяем пробный период
-            created_at = datetime.fromisoformat(user_data.get('created_at', datetime.now().isoformat()))
-            days_passed = (datetime.now() - created_at).days
+            # Выполнил 3 задания?
+            trial_tasks = user_data.get('completed_tasks_in_trial', 0)
+            if trial_tasks < 3:
+                return False
             
-            # Пробный период длится 3 дня, уведомляем на 3-й день
-            return days_passed == 3
+            # Еще не уведомляли?
+            if user_data.get('trial_completed_notified'):
+                return False
+            
+            # Проверяем, когда последний раз уведомляли
+            last_notification = user_data.get('last_subscription_notification')
+            if last_notification:
+                last_date = datetime.fromisoformat(last_notification)
+                days_since_last = (datetime.now() - last_date).days
+                # Не уведомляем чаще чем раз в 3 дня
+                if days_since_last < 3:
+                    return False
+            
+            return True
             
         except Exception as e:
-            logger.error(f"❌ Ошибка проверки окончания пробного периода: {e}")
+            logger.error(f"❌ Ошибка проверки пробного периода: {e}")
             return False
     
     @staticmethod
@@ -5059,38 +4979,14 @@ class SubscriptionNotifications:
         except Exception as e:
             logger.error(f"❌ Ошибка проверки периодических напоминаний: {e}")
             return False
-        
+
     @staticmethod
-    async def send_trial_ended_notification(user_id: int, user_data: dict, gender: dict):
-        """Уведомление об окончании пробного периода (3 дня с регистрации)"""
+    async def send_trial_completed_notification(user_id: int, user_data: dict, gender: dict):
+        """Уведомление о завершении пробного периода"""
         try:
-            # Считаем сколько заданий выполнено за пробный период
-            completed_tasks_in_trial = user_data.get('completed_tasks_in_trial', 0)
-            
-            # Определяем правильные окончания
-            ending = gender.get('ending', '')
-            verb_action = 'выполнил' if ending == '' else 'выполнила'
-            got_ending = '' if ending == '' else 'а'
-            
             message_text = (
                 f"🎯 <b>Пробный период завершен!</b>\n\n"
-                f"За 3 дня ты {verb_action} "
-                f"{completed_tasks_in_trial} заданий и получил{got_ending} "
-                f"представление о системе «300 ПИНКОВ».\n\n"
-            )
-            
-            if completed_tasks_in_trial == 0:
-                message_text += (
-                    f"💡 <b>Ты еще не попробовал{ending} задания!</b>\n"
-                    f"Это отличный шанс начать развивать дисциплину.\n\n"
-                )
-            elif completed_tasks_in_trial < 3:
-                message_text += (
-                    f"💡 <b>Ты попробовал{ending} {completed_tasks_in_trial} задания!</b>\n"
-                    f"Продолжай развивать силу воли и дисциплину.\n\n"
-                )
-            
-            message_text += (
+                f"Ты {gender['verb_finished']} 3 пробных задания и получил{gender['ending_a']} представление о системе.\n\n"
                 f"💪 <b>Что тебя ждет в полной версии:</b>\n"
                 f"• Ежедневные задания для развития силы воли\n"
                 f"• Система рангов и достижений\n"
@@ -5108,7 +5004,7 @@ class SubscriptionNotifications:
             logger.info(f"✅ Уведомление о конце пробного периода отправлено пользователю {user_id}")
             
         except Exception as e:
-            logger.error(f"❌ Ошибка отправки уведомления о пробном периоде {user_id}: {e}")    
+            logger.error(f"❌ Ошибка отправки уведомления о пробном периоде {user_id}: {e}")
     
     @staticmethod
     async def send_subscription_ended_notification(user_id: int, user_data: dict, gender: dict):
@@ -5223,7 +5119,7 @@ class SubscriptionNotifications:
             
             if reminders_sent == 1:
                 message_text = (
-                    f"🌸 <b>Привет! Скучаем по тебе в челлендже!</b>\n\n"
+                    f"⏰ <b>Привет! Скучаем по тебе в челлендже!</b>\n\n"
                     f"Заметили, что ты давно не получал{gender['ending']} задания.\n\n"
                     f"💪 <b>Напомним, зачем нужен челлендж:</b>\n"
                     f"• Развитие силы воли\n"
@@ -5261,7 +5157,7 @@ class SubscriptionNotifications:
             logger.info(f"✅ Периодическое напоминание #{reminders_sent} отправлено пользователю {user_id}")
             
         except Exception as e:
-            logger.error(f"❌ Ошибка отправки периодического напоминания {user_id}: {e}")        
+            logger.error(f"❌ Ошибка отправки периодического напоминания {user_id}: {e}")
 
 # ========== АДМИНСКАЯ ПАНЕЛЬ ДЛЯ ВЫВОДОВ ==========
 
@@ -8694,64 +8590,258 @@ async def check_me_command(message: Message):
     await message.answer(debug_info)
 # В функции main() добавляем:
 async def main():
-    logger.info("Бот запускается...")
+    """Главная функция запуска бота"""
+    logger.info("=" * 50)
+    logger.info("🚀 ЗАПУСК БОТА '300 ПИНКОВ'")
+    logger.info("=" * 50)
     
-    # Запускаем планировщик
-    scheduler.add_job(
-        send_daily_tasks,
-        trigger=CronTrigger(
-            hour=config.TASK_TIME_HOUR,
-            minute=config.TASK_TIME_MINUTE,
-            timezone=config.TIMEZONE
-        ),
-        id="daily_tasks"
-    )
+    # Получаем информацию о боте
+    try:
+        bot_info = await bot.get_me()
+        logger.info(f"🤖 Бот: @{bot_info.username}")
+        logger.info(f"🆔 ID бота: {bot_info.id}")
+        logger.info(f"👤 Имя бота: {bot_info.first_name}")
+    except Exception as e:
+        logger.error(f"❌ Ошибка получения информации о боте: {e}")
     
-    scheduler.add_job(
-        send_reminders,
-        trigger=CronTrigger(
-            hour=config.REMINDER_TIME_HOUR,
-            minute=config.REMINDER_TIME_MINUTE,
-            timezone=config.TIMEZONE
-        ),
-        id="reminders"
-    )
+    # Проверяем конфигурацию
+    logger.info("🔧 Проверка конфигурации...")
+    if not config.BOT_TOKEN:
+        logger.error("❌ BOT_TOKEN не установлен!")
+        return
     
-    scheduler.add_job(
-        check_midnight_reset,
-        trigger=CronTrigger(
-            hour=0, minute=0,  # Полночь
-            timezone=config.TIMEZONE
-        ),
-        id="midnight_reset"
-    )
+    if not config.ADMIN_ID:
+        logger.warning("⚠️ ADMIN_ID не установлен, админские функции недоступны")
     
-    # 🔥 УМНЫЕ УВЕДОМЛЕНИЯ О ПОДПИСКАХ (каждый день в 11:00)
-    scheduler.add_job(
-        SubscriptionNotifications.check_all_users_for_subscription_notifications,
-        trigger=CronTrigger(
-            hour=11, minute=0,
-            timezone=config.TIMEZONE
-        ),
-        id="smart_subscription_notifications"
-    )
+    logger.info("✅ Конфигурация проверена")
     
-    # 🔥 ДОПОЛНИТЕЛЬНО: Быстрая проверка (каждые 6 часов для срочных уведомлений)
-    scheduler.add_job(
-        lambda: SubscriptionNotifications.check_all_users_for_subscription_notifications(),
-        trigger=CronTrigger(
-            hour="*/6",  # Каждые 6 часов
-            minute=30,
-            timezone=config.TIMEZONE
-        ),
-        id="quick_subscription_check"
-    )
+    # Проверяем файлы данных
+    logger.info("📁 Проверка файлов данных...")
+    try:
+        # Проверяем существование файлов
+        import os
+        required_files = [
+            config.USERS_FILE,
+            config.PAYMENTS_FILE,
+            config.WITHDRAWALS_FILE,
+            config.INVITE_CODES_FILE
+        ]
+        
+        for file in required_files:
+            if not os.path.exists(file):
+                # Создаем пустые файлы если их нет
+                await utils.write_json(file, {})
+                logger.info(f"📄 Создан файл: {file}")
+            else:
+                logger.info(f"✅ Файл существует: {file}")
+    except Exception as e:
+        logger.error(f"❌ Ошибка проверки файлов: {e}")
     
-    scheduler.start()
-    logger.info("📅 Планировщик запущен")
+    # Инициализируем планировщик
+    logger.info("📅 Инициализация планировщика задач...")
     
-    logger.info("🤖 Запускаем бота...")
-    await dp.start_polling(bot)
+    try:
+        # ========== ОСНОВНЫЕ ЗАДАЧИ РАССЫЛКИ ==========
+        
+        # 1. Ежедневная рассылка заданий в 9:00
+        scheduler.add_job(
+            send_daily_tasks,
+            trigger=CronTrigger(
+                hour=config.TASK_TIME_HOUR,
+                minute=config.TASK_TIME_MINUTE,
+                timezone=config.TIMEZONE
+            ),
+            id="daily_tasks",
+            name="Ежедневная рассылка заданий",
+            misfire_grace_time=300,  # 5 минут на выполнение если пропустили
+            coalesce=True  # Объединять пропущенные выполнения
+        )
+        logger.info(f"✅ Задача: Рассылка заданий в {config.TASK_TIME_HOUR:02d}:{config.TASK_TIME_MINUTE:02d}")
+        
+        # 2. Напоминания в 18:30
+        scheduler.add_job(
+            send_reminders,
+            trigger=CronTrigger(
+                hour=config.REMINDER_TIME_HOUR,
+                minute=config.REMINDER_TIME_MINUTE,
+                timezone=config.TIMEZONE
+            ),
+            id="reminders",
+            name="Вечерние напоминания",
+            misfire_grace_time=300
+        )
+        logger.info(f"✅ Задача: Напоминания в {config.REMINDER_TIME_HOUR:02d}:{config.REMINDER_TIME_MINUTE:02d}")
+        
+        # 3. Полночный сброс в 00:00
+        scheduler.add_job(
+            check_midnight_reset,
+            trigger=CronTrigger(
+                hour=0, minute=0,
+                timezone=config.TIMEZONE
+            ),
+            id="midnight_reset",
+            name="Полночный сброс и блокировка",
+            misfire_grace_time=600  # 10 минут на выполнение
+        )
+        logger.info("✅ Задача: Полночный сброс в 00:00")
+        
+        # ========== УВЕДОМЛЕНИЯ О ПОДПИСКАХ ==========
+        
+        # 4. Умные уведомления о подписках (каждый день в 11:00)
+        scheduler.add_job(
+            SubscriptionNotifications.check_all_users_for_subscription_notifications,
+            trigger=CronTrigger(
+                hour=19, minute=15,
+                timezone=config.TIMEZONE
+            ),
+            id="smart_subscription_notifications",
+            name="Умные уведомления о подписках",
+            misfire_grace_time=300
+        )
+        logger.info("✅ Задача: Умные уведомления о подписках в 11:00")
+        
+        # 5. Быстрая проверка подписок (каждые 6 часов)
+        scheduler.add_job(
+            lambda: SubscriptionNotifications.check_all_users_for_subscription_notifications(),
+            trigger=CronTrigger(
+                hour="*/6",  # Каждые 6 часов
+                minute=30,
+                timezone=config.TIMEZONE
+            ),
+            id="quick_subscription_check",
+            name="Быстрая проверка подписок",
+            misfire_grace_time=300
+        )
+        logger.info("✅ Задача: Быстрая проверка подписок каждые 6 часов")
+        
+        # ========== АВТОМАТИЧЕСКИЕ ПРОЦЕССЫ ==========
+        
+        # 6. Проверка пробного периода в 10:00
+        if 'check_trial_expiry' in globals():
+            scheduler.add_job(
+                check_trial_expiry,
+                trigger=CronTrigger(
+                    hour=19, minute=3,
+                    timezone=config.TIMEZONE
+                ),
+                id="trial_expiry_check",
+                name="Проверка пробного периода",
+                misfire_grace_time=300
+            )
+            logger.info("✅ Задача: Проверка пробного периода в 10:00")
+        
+        # 7. Авто-пропуск просроченных заданий (каждые 6 часов)
+        if 'check_and_auto_skip_expired_blocks' in globals():
+            scheduler.add_job(
+                check_and_auto_skip_expired_blocks,
+                trigger=CronTrigger(
+                    hour="*/6",  # Каждые 6 часов
+                    minute=0,
+                    timezone=config.TIMEZONE
+                ),
+                id="auto_skip_check",
+                name="Авто-пропуск просроченных заданий",
+                misfire_grace_time=300
+            )
+            logger.info("✅ Задача: Авто-пропуск просроченных заданий каждые 6 часов")
+        
+        # 8. Уведомления неактивным пользователям в 12:00
+        if 'simple_inactive_users_check' in globals():
+            scheduler.add_job(
+                simple_inactive_users_check,
+                trigger=CronTrigger(
+                    hour=19, minute=14,
+                    timezone=config.TIMEZONE
+                ),
+                id="inactive_users_notifications",
+                name="Уведомления неактивным пользователям",
+                misfire_grace_time=300
+            )
+            logger.info("✅ Задача: Уведомления неактивным пользователям в 12:00")
+        
+        # Запускаем все задачи сразу для тестирования при старте
+        logger.info("🔄 Запуск тестовых задач при старте...")
+        
+        # Немедленный запуск тестовых задач (асинхронно, не блокируя старт)
+        asyncio.create_task(run_initial_checks())
+        
+        # Запускаем планировщик
+        scheduler.start()
+        logger.info("✅ Планировщик запущен")
+        logger.info(f"📊 Всего задач: {len(scheduler.get_jobs())}")
+        
+        # Выводим расписание
+        logger.info("📅 Расписание задач:")
+        for job in scheduler.get_jobs():
+            next_run = job.next_run_time
+            if next_run:
+                next_run_str = next_run.astimezone(pytz.timezone(config.TIMEZONE)).strftime("%d.%m.%Y %H:%M")
+                logger.info(f"  • {job.name}: следующее выполнение в {next_run_str}")
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка инициализации планировщика: {e}")
+        return
+    
+    # Запускаем бота
+    try:
+        logger.info("🤖 Запускаем бота...")
+        logger.info("=" * 50)
+        
+        # Показываем информацию о доступных командах
+        logger.info("🎮 Доступные команды для админа:")
+        logger.info("  • /start - начать/перезапустить")
+        logger.info("  • /ref - реферальная ссылка")
+        logger.info("  • /rank - текущий ранг")
+        logger.info("  • /refstats - статистика рефералов")
+        logger.info("  • /check_subscription - статус подписки")
+        logger.info("  • /checkme - отладка данных")
+        logger.info("  • /debug_ref - отладка реферальной системы")
+        logger.info("  • /test_ranks - тест системы рангов")
+        logger.info("  • /reset_test_rank - сброс тестового режима")
+        logger.info("  • /reset_me - полный сброс пользователя")
+        logger.info("  • /force_reset USER_ID - принудительный сброс (админ)")
+        logger.info("=" * 50)
+        
+        # Запускаем поллинг бота
+        await dp.start_polling(bot, skip_updates=True)  # skip_updates=True чтобы игнорировать сообщения пока бот был оффлайн
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка запуска бота: {e}", exc_info=True)
+    finally:
+        # Останавливаем планировщик при завершении
+        logger.info("🛑 Останавливаем планировщик...")
+        scheduler.shutdown()
+        logger.info("👋 Бот завершил работу")
+
+
+async def run_initial_checks():
+    """Запуск первоначальных проверок при старте"""
+    try:
+        logger.info("🔍 Запуск первоначальных проверок...")
+        
+        # 1. Проверка пользователей
+        users = await utils.get_all_users()
+        logger.info(f"👥 Всего пользователей в системе: {len(users)}")
+        
+        # 2. Быстрая проверка подписок
+        await SubscriptionNotifications.check_all_users_for_subscription_notifications()
+        
+        # 3. Проверка блокировок
+        if 'check_and_auto_skip_expired_blocks' in globals():
+            await check_and_auto_skip_expired_blocks()
+        
+        logger.info("✅ Первоначальные проверки завершены")
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка при первоначальных проверках: {e}")
+
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("🛑 Бот остановлен пользователем")
+    except Exception as e:
+        logger.error(f"❌ Критическая ошибка: {e}", exc_info=True)
+    finally:
+        logger.info("👋 Работа бота завершена")
