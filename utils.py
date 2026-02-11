@@ -1585,6 +1585,70 @@ async def get_users_without_response():
     
     return result
 
+from datetime import datetime, timedelta
+from typing import List, Tuple
+
+async def get_users_by_filter(filter_type: str) -> List[Tuple[int, dict]]:
+    """
+    Возвращает пользователей по фильтру
+    
+    Args:
+        filter_type: 'all', 'active', 'inactive', 'subscribed', 'trial', 'no_subscription'
+    
+    Returns:
+        Список кортежей (user_id, user_data)
+    """
+    users = await get_all_users()
+    filtered_users = []
+    
+    for user_id_str, user_data in users.items():
+        try:
+            user_id = int(user_id_str)
+            
+            # Определяем статусы пользователя
+            has_subscription = await is_subscription_active(user_data)
+            is_trial = await is_in_trial_period(user_data)
+            
+            # Проверяем активность (последняя активность в течение 30 дней)
+            last_activity_str = user_data.get('last_activity')
+            is_recently_active = True  # по умолчанию
+            
+            if last_activity_str:
+                try:
+                    last_activity = datetime.fromisoformat(last_activity_str)
+                    days_since_active = (datetime.now() - last_activity).days
+                    is_recently_active = days_since_active <= 30
+                except:
+                    pass  # если ошибка парсинга даты
+            
+            # Применяем фильтры
+            if filter_type == 'all':
+                filtered_users.append((user_id, user_data))
+                
+            elif filter_type == 'active':
+                if is_recently_active:
+                    filtered_users.append((user_id, user_data))
+                    
+            elif filter_type == 'inactive':
+                if not is_recently_active:
+                    filtered_users.append((user_id, user_data))
+                    
+            elif filter_type == 'subscribed':
+                if has_subscription:
+                    filtered_users.append((user_id, user_data))
+                    
+            elif filter_type == 'trial':
+                if is_trial:
+                    filtered_users.append((user_id, user_data))
+                    
+            elif filter_type == 'no_subscription':
+                if not has_subscription and not is_trial:
+                    filtered_users.append((user_id, user_data))
+                    
+        except Exception as e:
+            logger.error(f"Ошибка фильтрации пользователя {user_id_str}: {e}")
+    
+    return filtered_users
 # ========== ДРУГИЕ УТИЛИТЫ ==========
 
 async def get_user_timezone(user_id):

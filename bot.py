@@ -6,6 +6,8 @@ import random
 import math 
 import os
 import shutil
+from aiogram import F
+from aiogram.filters import StateFilter
 from aiogram.fsm.storage.base import StorageKey
 from aiogram import Bot, Dispatcher, F
 from aiogram import exceptions
@@ -67,6 +69,12 @@ class UserStates(StatesGroup):
     admin_waiting_certificate_days = State()
     admin_waiting_certificate_recipient = State()  # для кого сертификат
     admin_waiting_certificate_message = State()  # персональное сообщение
+    # Новые состояния для массовой рассылки
+    admin_waiting_mass_text = State()
+    admin_waiting_mass_confirm = State()
+    admin_waiting_mass_photo = State()
+    admin_viewing_mass_history = State()
+
 
 class ReferralNotifications:
     """Класс для уведомлений реферальной системы"""
@@ -744,7 +752,7 @@ async def send_reminders():
                     f"{reminder_text}\n\n"
                     f"<b>Задание дня #{task['day']}</b>\n"
                     f"«{task['text']}»\n\n"
-                    f"<i>До 23:59 на выполнение</i>"
+                    f"<i>Выполни задание до 23:59</i>"
                 )
                 
                 await bot.send_message(
@@ -944,19 +952,18 @@ async def cmd_start(message: Message, state: FSMContext):
             
             # Приветственное сообщение
             await message.answer(
-                "👋 <b>Добро пожаловать в челлендж «300 ПИНКОВ»!</b>\n\n"
-                "• Это не про мотивацию. Это <b>система</b>, которая заставляет мозг и тело работать по-новому.\n"
-                "• Как тренажёрный зал для привычек и мышления.\n\n"
+                "👋 <b>Приветствую, путник!</b>\n\n"
+                "• 300 ПИНКОВ — это система, которая заставляет мозг и тело работать по-новому.\n\n"
                 
                 "🎯 <b>Что тебя ждет:</b>\n"
-                "• Ежедневные задания для саморазвития\n"
+                "• Ежедневные задания\n"
                 "• 300 дней непрерывного роста\n"
-                "• Система рангов и достижений\n\n"
+                "• Система рангов и привилегий\n\n"
                 
                 "💪 <b>Как это работает:</b>\n"
-                "• Каждый день в 9:00 ты получаешь ПИНОК\n"
-                "• У тебя есть время до 23:59, чтобы его выполнить\n"
-                "• Честность перед собой - главное правило!\n\n"
+                "• В 9:00 — получаешь ПИНОК\n"
+                "• До 23:59 — выполняешь\n"
+                "• Честность = прогресс\n\n"
                 
                 "⬇️ <b>Давай настроим твой челлендж!</b>",
                 reply_markup=ReplyKeyboardMarkup(
@@ -1004,8 +1011,7 @@ async def process_timezone_step(message: Message, state: FSMContext):
     
     await message.answer(
         "🕐 <b>Выбери свой часовой пояс:</b>\n\n"
-        "Это нужно чтобы задания приходили ровно в 9:00 по твоему местному времени.\n\n"
-        "Просто нажми на кнопку с твоим городом или ближайшим к тебе часовым поясом:",
+        "ПИНОК придёт ровно в 9:00 по твоему местному времени.",
         reply_markup=get_timezone_keyboard()
     )
 
@@ -1030,24 +1036,20 @@ async def process_timezone_selection(message: Message, state: FSMContext):
     # ШАГ 3: Объяснение архетипов
     await message.answer(
     "💪 <b>Выбери свой путь развития</b>\n\n"
-    "У нас два архетипа - каждый со своим стилем заданий и подходом:\n\n"
     
     "⚔️ <b>Спартанец (мужской путь)</b>\n" 
-    "• Задания на физическую и ментальную стойкость\n"
-    "• Развитие лидерских качеств и ответственности\n"
+    "• Лидерство и ответственность\n"
     "• Мужские вызовы и дисциплина\n\n"
 
     "🛡️ <b>Амазонка (женский путь)</b>\n"
-    "• Задания на осознанность и женскую энергию\n"
-    "• Развитие интуиции и эмоционального интеллекта\n"
+    "• Осознанность и женская энергия\n"
     "• Женские практики и самопознание\n\n"
     
     "🎯 <b>Важно:</b>\n"
     "• Задания адаптированы под гендерные особенности\n"
     "• Учтены психологические различия\n\n"
     
-    "Выбирай тот путь, который откликается тебе сильнее.\n"
-    "Это определит твои задания на все 300 дней:",
+    "⬇️ <b>Какой путь твой?</b>",
     reply_markup=archetype_keyboard
 )
     await state.set_state(UserStates.waiting_for_archetype)
@@ -1204,7 +1206,7 @@ async def process_ready_confirmation(message: Message, state: FSMContext):
         # 🎯 ОТПРАВЛЯЕМ ПРИВЕТСТВЕННОЕ СООБЩЕНИЕ
         if archetype == "spartan":
             welcome_message = (
-                "🎯 <b>ДОБРО ПОЖАЛОВАТЬ, ВОИН!</b>\n\n"
+                "🎯 <b>ДОБРО ПОЖАЛОВАТЬ, ПУТНИК!</b>\n\n"
                 "Ты выбрал путь силы и дисциплины.\n\n"
                 "Теперь ты часть древней Спарты - людей, которые "
                 "своей волей и упорством создавали легенды.\n\n"
@@ -1331,84 +1333,194 @@ async def process_ready_confirmation(message: Message, state: FSMContext):
             pass
 @dp.message(UserStates.waiting_for_archetype)
 async def process_archetype(message: Message, state: FSMContext):
-    """Обработка выбора архетипа с гендерными окончаниями"""
-    user = message.from_user
-    if not user:
-        await message.answer("Ошибка: не удалось получить информацию о пользователе")
-        return
+    """Обработка выбора архетипа - ЗАДАНИЕ СРАЗУ ПОСЛЕ ВЫБОРА"""
+    try:
+        if not message or not message.from_user:
+            await message.answer("Ошибка: не удалось получить информацию о пользователе")
+            return
+            
+        if not message.text:
+            await message.answer("Пожалуйста, выбери архетип с клавиатуры:")
+            return
+            
+        archetype_map = {
+            "⚔️ спартанец": "spartan",
+            "🛡️ амазонка": "amazon"
+        }
         
-    if not message.text:
-        await message.answer("Пожалуйста, выбери архетип с клавиатуры:")
-        return
+        archetype = None
+        text_lower = message.text.lower()
+        for key, value in archetype_map.items():
+            if key in text_lower:
+                archetype = value
+                break
         
-    archetype_map = {
-        "⚔️ спартанец": "spartan",
-        "🛡️ амазонка": "amazon"
-    }
-    
-    archetype = None
-    text_lower = message.text.lower()
-    for key, value in archetype_map.items():
-        if key in text_lower:
-            archetype = value
-            break
-    
-    if not archetype:
-        await message.answer("Пожалуйста, выбери архетип с клавиатуры:")
-        return
-    
-    # Определяем текст в зависимости от архетипа
-    if archetype == "spartan":
-        welcome_text = (
-            "🛡️ <b>Путь Спартанца выбран!</b>\n\n"
-            "Твой путь — сила, дисциплина и порядок.\n\n"
-            "🎯 <b>Что тебя ждет:</b>\n"
-            "• Задания на физическую и ментальную стойкость\n"
-            "• Развитие лидерских качеств и ответственности\n"
-            "• Ежедневное укрепление силы воли\n"
-            "• Мужские вызовы и дисциплина\n\n"
-        )
-        # Кнопка для мужского рода
-        ready_button_text = "✅ Да, я готов начать!"
+        if not archetype:
+            await message.answer("Пожалуйста, выбери архетип с клавиатуры:")
+            return
         
-    else:  # amazon
-        welcome_text = (
-            "⚔️ <b>Путь Амазонки выбран!</b>\n\n"
-            "Твой путь — грация, сила и гармония.\n\n"
-            "🎯 <b>Что тебя ждет:</b>\n"
-            "• Задания на осознанность и женскую энергию\n"
-            "• Развитие интуиции и эмоционального интеллекта\n"
-            "• Женские практики и самопознание\n"
-            "• Баланс силы и мягкости\n\n"
-        )
-        # Кнопка для женского рода
-        ready_button_text = "✅ Да, я готова начать!"
-    
-    # Общая информация для обоих архетипов
-    welcome_text += (
-        "📊 <b>Система челленджа:</b>\n"
-        "• 300 дней непрерывного роста\n"
-        "• 10 этапов по 30 дней каждый\n"
-        "• Ежедневные задания в 9:00\n"
-        "• Система рангов и достижений\n\n"
-        "🔥 <b>Особенности системы:</b>\n"
-        "• Разные задания для мужчин и женщин\n"
-        "• Учет гендерных особенностей\n"
-        "• Индивидуальный подход к росту\n\n"
-        "⬇️ <b>Нажми кнопку ниже, чтобы начать!</b>"
-    )
-    
-    await message.answer(
-        welcome_text,
-        reply_markup=ReplyKeyboardMarkup(
-            keyboard=[[KeyboardButton(text=ready_button_text)]],
-            resize_keyboard=True
-        )
-    )
-    
-    # Сохраняем архетип в состоянии
-    await state.update_data(archetype=archetype)
-    await state.set_state(UserStates.waiting_for_ready)
+        user = message.from_user
+        user_id = user.id
+        
+        logger.info(f"✅ Пользователь {user_id} выбрал архетип: {archetype}")
+        
+        # Получаем все сохраненные данные из состояния
+        user_data = await state.get_data()
+        timezone = user_data.get('timezone', 'Europe/Moscow')
+        referrer_id = user_data.get('referrer_id')
+        
+        # ========== СОЗДАЕМ ПОЛЬЗОВАТЕЛЯ ==========
+        new_user_data = {
+            "user_id": user_id,
+            "username": user.username or "",
+            "first_name": user.first_name or "",
+            "last_name": user.last_name or "",
+            "archetype": archetype,
+            "timezone": timezone,
+            "current_day": 0,
+            "completed_tasks": 0,
+            "rank": "putnik",
+            "created_at": datetime.now().isoformat(),
+            "referrals": [],
+            "referral_earnings": 0,
+            "last_task_sent": None,
+            "task_completed_today": False,
+            "debts": [],
+            "last_activity": datetime.now().isoformat(),
+            "invited_by": referrer_id,
+            "reserved_for_withdrawal": 0,
+            "referral_stats": {
+                "total_earned": 0,
+                "payments_count": 0,
+                "last_payment": None
+            },
+            "completed_tasks_in_trial": 0,
+            "trial_finished": False
+        }
+        
+        # Сохраняем пользователя
+        try:
+            users = await utils.atomic_read_json(config.USERS_FILE)
+            if not isinstance(users, dict):
+                users = {}
+            users[str(user_id)] = new_user_data
+            await utils.atomic_write_json(config.USERS_FILE, users)
+            logger.info(f"💾 Пользователь {user_id} сохранен в базу")
+        except Exception as e:
+            logger.error(f"❌ Ошибка сохранения пользователя {user_id}: {e}")
+            await message.answer("❌ Ошибка регистрации. Попробуйте позже.")
+            await state.clear()
+            return
+        
+        # Сохраняем реферальную связь
+        if referrer_id:
+            success = await utils.save_referral_relationship(user_id, referrer_id)
+            if success:
+                logger.info(f"✅ Реферальная связь сохранена: {user_id} -> {referrer_id}")
+                try:
+                    referrer_name = new_user_data.get('first_name', 'Новый пользователь')
+                    welcome_msg = (
+                        f"🎉 <b>Новый реферал!</b>\n\n"
+                        f"По твоей ссылке присоединился {referrer_name}!\n"
+                        f"Когда он оплатит подписку - ты получишь бонус!"
+                    )
+                    await bot.send_message(referrer_id, welcome_msg)
+                except Exception as e:
+                    logger.error(f"⚠️ Не удалось уведомить реферера {referrer_id}: {e}")
+        
+        # ========== ОТПРАВЛЯЕМ ПРИВЕТСТВИЕ И ПЕРВОЕ ЗАДАНИЕ ==========
+        
+        # Приветствие в зависимости от архетипа
+        if archetype == "spartan":
+            welcome_message = (
+                "🎯 <b>ПУТЬ СПАРТАНЦА ВЫБРАН</b>\n\n"
+            )
+        else:
+            welcome_message = (
+                "🎯 <b>ПУТЬ АМАЗОНКИ ВЫБРАН</b>\n\n"
+            )
+        
+        # Получаем первое задание
+        try:
+            task_id, task = await utils.get_task_by_day(1, archetype)
+            
+            if task:
+                gender_ending = "ТВОЕ" if archetype == "spartan" else "ТВОЁ"
+                
+                task_message = (
+                    f"{welcome_message}"
+                    f"<b>{gender_ending} ПЕРВОЕ ЗАДАНИЕ!</b>\n\n"
+                    f"<b>День 1/300</b>\n\n"
+                    f"{task['text']}\n\n"
+                    f"⏰ Выполни задание до 23:59\n\n"
+                    f"<i>Отмечай выполнение кнопками 👇</i>"
+                )
+                
+                await message.answer(
+                    task_message,
+                    reply_markup=keyboards.task_keyboard,
+                    disable_web_page_preview=True
+                )
+                
+                # Обновляем данные пользователя
+                new_user_data['last_task_sent'] = datetime.now().isoformat()
+                new_user_data['task_completed_today'] = False
+                await utils.save_user(user_id, new_user_data)
+                
+                logger.info(f"✅ Первое задание отправлено пользователю {user_id}")
+                
+            else:
+                # Если задание не найдено
+                await message.answer(
+                    f"{welcome_message}"
+                    "К сожалению, первое задание временно недоступно.\n"
+                    "Мы уже работаем над решением проблемы.\n\n"
+                    "А пока можешь ознакомиться с функциями бота:",
+                    reply_markup=keyboards.get_main_menu(user_id)
+                )
+                logger.warning(f"⚠️ Не найдено задание дня 1 для пользователя {user_id}")
+                
+        except Exception as e:
+            logger.error(f"❌ Ошибка отправки задания: {e}")
+            await message.answer(
+                f"{welcome_message}"
+                "Произошла ошибка при загрузке задания.\n"
+                "Попробуй обновить меню через кнопку 'Задание на сегодня'.",
+                reply_markup=keyboards.get_main_menu(user_id)
+            )
+        
+        # Обновляем активность
+        await utils.update_user_activity(user_id)
+        
+        # Очищаем состояние
+        await state.clear()
+        
+        logger.info(f"✅ Регистрация пользователя {user_id} завершена успешно")
+        
+        # Уведомляем админа
+        try:
+            admin_message = (
+                f"👤 <b>НОВЫЙ ПОЛЬЗОВАТЕЛЬ</b>\n\n"
+                f"📛 {user.first_name} (@{user.username or 'нет'})\n"
+                f"🆔 {user_id}\n"
+                f"🎯 Архетип: {'🛡️ Спартанец' if archetype == 'spartan' else '⚔️ Амазонка'}\n"
+                f"🕐 Часовой пояс: {timezone}\n"
+                f"🤝 Реферер: {referrer_id if referrer_id else 'нет'}"
+            )
+            await bot.send_message(config.ADMIN_ID, admin_message)
+        except Exception as e:
+            logger.error(f"⚠️ Не удалось уведомить админа: {e}")
+        
+    except Exception as e:
+        logger.error(f"❌ Критическая ошибка в process_archetype: {e}", exc_info=True)
+        try:
+            await message.answer(
+                "❌ <b>Произошла ошибка при регистрации</b>\n\n"
+                "Пожалуйста, попробуй снова через /start"
+            )
+        except:
+            pass
+        await state.clear()
 # ========== РАЗНООБРАЗНЫЕ РЕПЛИКИ БОТА ==========
 
 class BotReplies:
@@ -4771,6 +4883,661 @@ async def withdrawal_stats_handler(callback: CallbackQuery):
     await callback.message.edit_text(message_text)
     await callback.answer()
 
+
+# ========== МАССОВАЯ РАССЫЛКА==========
+@dp.message(Command("test_send"))
+async def test_send_command(message: Message):
+    """Тест отправки сообщения - ПРОСТАЯ ВЕРСИЯ"""
+    if not message or not message.from_user or message.from_user.id != config.ADMIN_ID:
+        return
+    
+    try:
+        # Просто отправляем сообщение самому себе
+        await bot.send_message(
+            chat_id=message.from_user.id,
+            text="✅ <b>ТЕСТОВОЕ СООБЩЕНИЕ</b>\n\n"
+                 "Если вы видите это, значит бот может отправлять сообщения!"
+        )
+        await message.answer("✅ Тестовое сообщение отправлено!")
+    except Exception as e:
+        logger.error(f"❌ Ошибка тестовой отправки: {e}")
+        await message.answer(f"❌ Ошибка: {e}")
+
+    # НОВЫЙ СОСТОЯНИЯ
+class MassNotificationState(StatesGroup):
+    waiting_for_audience = State()
+    waiting_for_content = State()
+    confirmation = State()
+
+# 1. Начало рассылки
+# 1. Начало рассылки с добавлением фильтра "без подписки"
+@dp.message(F.text == "📢 Массовая рассылка")
+async def start_simple_mass_notification(message: Message, state: FSMContext):
+    """Начало массовой рассылки - С ДОБАВЛЕННЫМ ФИЛЬТРОМ БЕЗ ПОДПИСКИ"""
+    try:
+        if not message or not message.from_user:
+            return
+        
+        if message.from_user.id != config.ADMIN_ID:
+            return
+        
+        # Очищаем предыдущее состояние
+        await state.clear()
+        
+        # Создаем клавиатуру со всеми фильтрами
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="👥 Всем пользователям", callback_data="mass_simple_all")],
+                [InlineKeyboardButton(text="✅ Активным (30 дней)", callback_data="mass_simple_active")],
+                [InlineKeyboardButton(text="❌ Неактивным (>30 дней)", callback_data="mass_simple_inactive")],
+                [InlineKeyboardButton(text="💎 С подпиской", callback_data="mass_simple_subscribed")],
+                [InlineKeyboardButton(text="🎁 В пробном периоде", callback_data="mass_simple_trial")],
+                [InlineKeyboardButton(text="🚫 Без подписки", callback_data="mass_simple_no_sub")],  # НОВЫЙ ФИЛЬТР
+                [InlineKeyboardButton(text="❌ Отмена", callback_data="mass_simple_cancel")]
+            ]
+        )
+        
+        # Получаем статистику для информации
+        users = await utils.get_all_users()
+        total_users = len(users)
+        
+        # Подсчитываем количество по фильтрам
+        active_count = 0
+        inactive_count = 0
+        subscribed_count = 0
+        trial_count = 0
+        no_sub_count = 0
+        
+        for user_data in users.values():
+            # Активные (30 дней)
+            last_activity = user_data.get('last_activity')
+            if last_activity:
+                try:
+                    last_date = datetime.fromisoformat(last_activity)
+                    days_passed = (datetime.now() - last_date).days
+                    if days_passed <= 30:
+                        active_count += 1
+                    else:
+                        inactive_count += 1
+                except:
+                    pass
+            
+            # С подпиской
+            if await utils.is_subscription_active(user_data):
+                subscribed_count += 1
+            
+            # В пробном периоде
+            if await utils.is_in_trial_period(user_data):
+                trial_count += 1
+            
+            # Без подписки
+            if not await utils.is_subscription_active(user_data) and not await utils.is_in_trial_period(user_data):
+                no_sub_count += 1
+        
+        await message.answer(
+            f"📢 <b>МАССОВАЯ РАССЫЛКА</b>\n\n"
+            f"👥 Всего пользователей: {total_users}\n"
+            f"✅ Активных: {active_count}\n"
+            f"❌ Неактивных: {inactive_count}\n"
+            f"💎 С подпиской: {subscribed_count}\n"
+            f"🎁 В пробном: {trial_count}\n"
+            f"🚫 Без подписки: {no_sub_count}\n\n"
+            f"Выберите аудиторию для рассылки:",
+            reply_markup=keyboard
+        )
+        
+        await state.set_state(MassNotificationState.waiting_for_audience)
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка в start_simple_mass_notification: {e}")
+        await message.answer("❌ Произошла ошибка")
+# 2. Обработка выбора аудитории
+@dp.callback_query(MassNotificationState.waiting_for_audience, F.data.startswith("mass_simple_"))
+async def process_simple_audience(callback: CallbackQuery, state: FSMContext):
+    """Обработка выбора аудитории - ИСПРАВЛЕННАЯ ВЕРСИЯ"""
+    try:
+        # 1. Проверяем все возможные None
+        if callback is None:
+            logger.error("❌ process_simple_audience: callback is None")
+            return
+        
+        if not hasattr(callback, 'from_user') or callback.from_user is None:
+            logger.error("❌ process_simple_audience: callback.from_user is None")
+            return
+        
+        user = callback.from_user
+        
+        # 2. Проверяем права администратора
+        if user.id != config.ADMIN_ID:
+            try:
+                await callback.answer("⛔ Нет доступа")
+            except:
+                pass
+            return
+        
+        # 3. Проверяем наличие данных callback
+        if not hasattr(callback, 'data') or callback.data is None:
+            try:
+                await callback.answer("❌ Ошибка данных")
+            except:
+                pass
+            return
+        
+        # 4. Безопасно извлекаем данные
+        callback_data = str(callback.data) if callback.data else ""
+        
+        # Проверяем что строка не пустая и содержит нужный префикс
+        if not callback_data.startswith("mass_simple_"):
+            try:
+                await callback.answer("❌ Неверный формат данных")
+            except:
+                pass
+            return
+        
+        # Безопасно извлекаем тип
+        data = callback_data.replace("mass_simple_", "") if callback_data else ""
+        
+        if not data:
+            try:
+                await callback.answer("❌ Ошибка обработки данных")
+            except:
+                pass
+            return
+        
+        # 5. Обработка отмены
+        if data == "cancel":
+            await state.clear()
+            if callback and hasattr(callback, 'message') and callback.message is not None:
+                try:
+                    await callback.message.edit_text("❌ Рассылка отменена")
+                except Exception as e:
+                    logger.error(f"Ошибка редактирования сообщения: {e}")
+            return
+        
+        # 6. Сохраняем тип аудитории
+        await state.update_data(audience_type=data)
+        
+        # 7. Редактируем сообщение с проверкой
+        if callback and hasattr(callback, 'message') and callback.message is not None:
+            try:
+                await callback.message.edit_text(
+                    "📝 <b>Отправьте сообщение для рассылки:</b>\n\n"
+                    "• Можно отправить текст\n"
+                    "• Или фото с подписью\n"
+                    "• Или просто фото\n\n"
+                    "Сообщение будет отправлено как есть."
+                )
+            except Exception as e:
+                logger.error(f"Ошибка редактирования сообщения: {e}")
+                # Пытаемся отправить новое сообщение
+                try:
+                    await bot.send_message(
+                        chat_id=user.id,
+                        text="📝 <b>Отправьте сообщение для рассылки:</b>\n\n"
+                             "• Можно отправить текст\n"
+                             "• Или фото с подписью\n"
+                             "• Или просто фото\n\n"
+                             "Сообщение будет отправлено как есть."
+                    )
+                except Exception as e2:
+                    logger.error(f"Ошибка отправки сообщения: {e2}")
+        
+        # 8. Устанавливаем состояние
+        await state.set_state(MassNotificationState.waiting_for_content)
+        
+        # 9. Отвечаем на callback
+        try:
+            await callback.answer("✅ Выберите сообщение для рассылки")
+        except:
+            pass
+        
+    except Exception as e:
+        logger.error(f"❌ Критическая ошибка в process_simple_audience: {e}", exc_info=True)
+        
+        # Пытаемся сообщить об ошибке пользователю
+        try:
+            if callback and hasattr(callback, 'message') and callback.message is not None:
+                await callback.message.edit_text(f"❌ Произошла ошибка: {str(e)[:100]}")
+        except:
+            try:
+                if callback and callback.from_user:
+                    await bot.send_message(
+                        chat_id=callback.from_user.id,
+                        text="❌ Произошла ошибка при обработке запроса"
+                    )
+            except:
+                pass
+
+# 3. Получение контента
+# 3. Получение контента - ОБНОВЛЕННАЯ ВЕРСИЯ
+@dp.message(MassNotificationState.waiting_for_content)
+async def process_simple_content(message: Message, state: FSMContext):
+    """Получение контента для рассылки - С ДОБАВЛЕННЫМ ФИЛЬТРОМ БЕЗ ПОДПИСКИ"""
+    try:
+        if not message or not message.from_user or message.from_user.id != config.ADMIN_ID:
+            return
+        
+        # Получаем данные из состояния
+        data = await state.get_data()
+        audience_type = data.get('audience_type', 'all')
+        
+        # Определяем контент
+        content_type = ""
+        content = ""
+        photo = ""
+        
+        if message.text:
+            content_type = 'text'
+            content = message.text
+        elif message.photo:
+            content_type = 'photo'
+            content = message.caption or ""
+            if message.photo:
+                photo = message.photo[-1].file_id
+        else:
+            await message.answer("❌ Отправьте текст или фото для рассылки")
+            return
+        
+        # Получаем пользователей по фильтру
+        users = []
+        try:
+            all_users = await utils.get_all_users()
+            
+            for user_id_str, user_data in all_users.items():
+                try:
+                    user_id = int(user_id_str)
+                    
+                    if audience_type == 'all':
+                        users.append(user_id)
+                        
+                    elif audience_type == 'active':
+                        # Активные последние 30 дней
+                        last_activity = user_data.get('last_activity')
+                        if last_activity:
+                            last_date = datetime.fromisoformat(last_activity)
+                            days_passed = (datetime.now() - last_date).days
+                            if days_passed <= 30:
+                                users.append(user_id)
+                        else:
+                            # Если нет даты активности, считаем активным
+                            users.append(user_id)
+                            
+                    elif audience_type == 'inactive':
+                        # Неактивные более 30 дней
+                        last_activity = user_data.get('last_activity')
+                        if last_activity:
+                            last_date = datetime.fromisoformat(last_activity)
+                            days_passed = (datetime.now() - last_date).days
+                            if days_passed > 30:
+                                users.append(user_id)
+                        # Если нет даты активности, не добавляем
+                            
+                    elif audience_type == 'subscribed':
+                        # С активной подпиской
+                        if await utils.is_subscription_active(user_data):
+                            users.append(user_id)
+                            
+                    elif audience_type == 'trial':
+                        # В пробном периоде
+                        if await utils.is_in_trial_period(user_data):
+                            users.append(user_id)
+                            
+                    elif audience_type == 'no_sub':
+                        # БЕЗ ПОДПИСКИ (ни подписки, ни пробного периода)
+                        has_sub = await utils.is_subscription_active(user_data)
+                        in_trial = await utils.is_in_trial_period(user_data)
+                        if not has_sub and not in_trial:
+                            users.append(user_id)
+                            
+                except Exception as e:
+                    logger.error(f"❌ Ошибка обработки пользователя {user_id_str}: {e}")
+                    continue
+                        
+        except Exception as e:
+            logger.error(f"❌ Ошибка фильтрации пользователей: {e}")
+            await message.answer("❌ Ошибка при получении списка пользователей")
+            await state.clear()
+            return
+        
+        if not users:
+            await message.answer("❌ Нет пользователей для рассылки по выбранному фильтру")
+            await state.clear()
+            return
+        
+        # Сохраняем все данные
+        await state.update_data(
+            content_type=content_type,
+            content=content,
+            photo=photo,
+            users=users,
+            users_count=len(users)
+        )
+        
+        # Показываем превью
+        audience_names = {
+            'all': 'всем пользователям',
+            'active': 'активным пользователям',
+            'inactive': 'неактивным пользователям',
+            'subscribed': 'с подпиской',
+            'trial': 'в пробном периоде',
+            'no_sub': 'без подписки'
+        }
+        
+        preview_text = (
+            f"📢 <b>ПРЕДПРОСМОТР РАССЫЛКИ</b>\n\n"
+            f"👥 Аудитория: {audience_names.get(audience_type, audience_type)}\n"
+            f"📊 Получателей: {len(users)}\n"
+            f"📝 Тип: {'📷 Фото' if content_type == 'photo' else '📄 Текст'}\n\n"
+        )
+        
+        if content:
+            preview_text += f"<b>Содержание:</b>\n"
+            preview_text += f"{content[:200]}..." if len(content) > 200 else f"{content}\n\n"
+        
+        preview_text += "<i>Подтвердить отправку?</i>"
+        
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="✅ Да, отправить", callback_data="mass_simple_confirm"),
+                    InlineKeyboardButton(text="❌ Нет, отменить", callback_data="mass_simple_cancel")
+                ]
+            ]
+        )
+        
+        # Отправляем превью
+        try:
+            if content_type == 'photo' and photo:
+                # Для фото отправляем новое сообщение
+                await message.answer_photo(
+                    photo=photo,
+                    caption=preview_text,
+                    reply_markup=keyboard,
+                    parse_mode='HTML'
+                )
+            else:
+                # Для текста отправляем новое сообщение
+                await message.answer(
+                    preview_text,
+                    reply_markup=keyboard,
+                    parse_mode='HTML'
+                )
+        except Exception as e:
+            logger.error(f"❌ Ошибка отправки превью: {e}")
+            # Если не удалось отправить с фото, пробуем без фото
+            if content_type == 'photo':
+                await message.answer(
+                    f"{preview_text}\n\n⚠️ <i>Фото не может быть отображено в превью</i>",
+                    reply_markup=keyboard,
+                    parse_mode='HTML'
+                )
+            else:
+                await message.answer(
+                    "❌ Ошибка при создании превью",
+                    reply_markup=keyboard
+                )
+        
+        await state.set_state(MassNotificationState.confirmation)
+        
+    except Exception as e:
+        logger.error(f"❌ Критическая ошибка в process_simple_content: {e}", exc_info=True)
+        await message.answer(f"❌ Ошибка обработки сообщения: {str(e)[:100]}")
+        await state.clear()
+# 4. Подтверждение и отправка
+@dp.callback_query(MassNotificationState.confirmation, F.data.in_(["mass_simple_confirm", "mass_simple_cancel"]))
+async def process_simple_confirmation(callback: CallbackQuery, state: FSMContext):
+    """Подтверждение рассылки - ИСПРАВЛЕННАЯ ВЕРСИЯ"""
+    try:
+        # 1. Проверяем callback на None
+        if callback is None:
+            logger.error("❌ process_simple_confirmation: callback is None")
+            return
+        
+        # 2. Проверяем from_user на None
+        if not hasattr(callback, 'from_user') or callback.from_user is None:
+            logger.error("❌ process_simple_confirmation: callback.from_user is None")
+            return
+        
+        # 3. Проверяем права администратора
+        if callback.from_user.id != config.ADMIN_ID:
+            try:
+                await callback.answer("⛔ Нет доступа")
+            except:
+                pass
+            return
+        
+        # 4. Проверяем callback.data на None
+        if not hasattr(callback, 'data') or callback.data is None:
+            try:
+                await callback.answer("❌ Ошибка данных")
+            except:
+                pass
+            await state.clear()
+            return
+        
+        # 5. Обработка отмены
+        if callback.data == "mass_simple_cancel":
+            await state.clear()
+            
+            # Безопасно редактируем сообщение
+            if hasattr(callback, 'message') and callback.message is not None:
+                try:
+                    await callback.message.edit_text("❌ Рассылка отменена")
+                except Exception as e:
+                    logger.error(f"Ошибка редактирования сообщения: {e}")
+                    try:
+                        await callback.message.delete()
+                    except:
+                        pass
+                    try:
+                        await bot.send_message(
+                            chat_id=callback.from_user.id,
+                            text="❌ Рассылка отменена"
+                        )
+                    except:
+                        pass
+            
+            # Безопасно отвечаем на callback
+            try:
+                await callback.answer()
+            except:
+                pass
+            return
+        
+        # 6. Проверка на подтверждение
+        if callback.data != "mass_simple_confirm":
+            try:
+                await callback.answer("❌ Неизвестная команда")
+            except:
+                pass
+            await state.clear()
+            return
+        
+        # 7. Получаем данные из состояния
+        data = await state.get_data()
+        content_type = data.get('content_type')
+        content = data.get('content', '')
+        photo = data.get('photo', '')
+        users = data.get('users', [])
+        
+        # 8. Проверяем наличие пользователей
+        if not users:
+            if hasattr(callback, 'message') and callback.message is not None:
+                try:
+                    await callback.message.edit_text("❌ Нет пользователей для рассылки")
+                except:
+                    pass
+            await state.clear()
+            try:
+                await callback.answer()
+            except:
+                pass
+            return
+        
+        # 9. Удаляем исходное сообщение с фото (если оно есть)
+        original_message = None
+        if hasattr(callback, 'message') and callback.message is not None:
+            original_message = callback.message
+            try:
+                await original_message.delete()
+            except Exception as e:
+                logger.error(f"Ошибка удаления сообщения: {e}")
+                # Не прерываем выполнение, если не удалось удалить
+        
+        # 10. Отправляем новое сообщение о начале рассылки
+        status_message = None
+        try:
+            status_message = await bot.send_message(
+                chat_id=callback.from_user.id,
+                text=(
+                    f"🔄 <b>Начинаю отправку...</b>\n\n"
+                    f"Получателей: {len(users)}\n"
+                    f"Отправлено: 0/{len(users)}"
+                ),
+                parse_mode='HTML'
+            )
+        except Exception as e:
+            logger.error(f"Ошибка отправки статусного сообщения: {e}")
+            # Если не удалось отправить, пытаемся использовать оригинальное сообщение
+            if original_message is not None:
+                try:
+                    status_message = await original_message.answer(
+                        f"🔄 <b>Начинаю отправку...</b>\n\n"
+                        f"Получателей: {len(users)}\n"
+                        f"Отправлено: 0/{len(users)}"
+                    )
+                except:
+                    pass
+        
+        sent_count = 0
+        failed_count = 0
+        
+        # 11. Отправляем сообщения пользователям
+        for i, user_id in enumerate(users, 1):
+            try:
+                if content_type == 'photo' and photo:
+                    await bot.send_photo(
+                        chat_id=user_id,
+                        photo=photo,
+                        caption=content if content else None,
+                        parse_mode='HTML'
+                    )
+                else:
+                    await bot.send_message(
+                        chat_id=user_id,
+                        text=content,
+                        parse_mode='HTML'
+                    )
+                
+                sent_count += 1
+                
+                # 12. Обновляем прогресс каждые 10 сообщений
+                if (i % 10 == 0 or i == len(users)) and status_message is not None:
+                    try:
+                        await status_message.edit_text(
+                            f"🔄 <b>Отправка...</b>\n\n"
+                            f"Получателей: {len(users)}\n"
+                            f"Отправлено: {i}/{len(users)} ({int((i/len(users))*100)}%)\n"
+                            f"✅ Успешно: {sent_count}\n"
+                            f"❌ Неудачно: {failed_count}"
+                        )
+                    except Exception as e:
+                        logger.error(f"Ошибка обновления прогресса: {e}")
+                        # Если не удалось отредактировать, отправляем новое сообщение
+                        try:
+                            status_message = await bot.send_message(
+                                chat_id=callback.from_user.id,
+                                text=(
+                                    f"🔄 <b>Отправка...</b>\n\n"
+                                    f"Получателей: {len(users)}\n"
+                                    f"Отправлено: {i}/{len(users)} ({int((i/len(users))*100)}%)\n"
+                                    f"✅ Успешно: {sent_count}\n"
+                                    f"❌ Неудачно: {failed_count}"
+                                ),
+                                parse_mode='HTML'
+                            )
+                        except:
+                            pass
+                
+                # 13. Пауза чтобы не перегружать API
+                if i % 20 == 0:
+                    await asyncio.sleep(1)
+                    
+            except Exception as e:
+                failed_count += 1
+                logger.error(f"❌ Ошибка отправки пользователю {user_id}: {e}")
+        
+        # 14. Итоговое сообщение
+        result_text = (
+            f"✅ <b>РАССЫЛКА ЗАВЕРШЕНА</b>\n\n"
+            f"📊 <b>Итоги:</b>\n"
+            f"• Всего получателей: {len(users)}\n"
+            f"• Успешно отправлено: {sent_count}\n"
+            f"• Не удалось отправить: {failed_count}\n\n"
+        )
+        
+        if failed_count > 0:
+            result_text += "⚠️ <i>Некоторым пользователям не удалось отправить сообщение.</i>"
+        
+        # 15. Отправляем итоговое сообщение
+        if status_message is not None:
+            try:
+                await status_message.edit_text(result_text)
+            except Exception as e:
+                logger.error(f"Ошибка редактирования итогового сообщения: {e}")
+                try:
+                    await bot.send_message(
+                        chat_id=callback.from_user.id,
+                        text=result_text,
+                        parse_mode='HTML'
+                    )
+                except:
+                    pass
+        else:
+            try:
+                await bot.send_message(
+                    chat_id=callback.from_user.id,
+                    text=result_text,
+                    parse_mode='HTML'
+                )
+            except:
+                pass
+        
+        # 16. Очищаем состояние
+        await state.clear()
+        
+        # 17. Безопасно отвечаем на callback
+        try:
+            await callback.answer("✅ Рассылка завершена")
+        except Exception as e:
+            logger.error(f"Ошибка ответа на callback: {e}")
+        
+    except Exception as e:
+        logger.error(f"❌ Критическая ошибка в process_simple_confirmation: {e}", exc_info=True)
+        
+        # Пытаемся сообщить об ошибке
+        try:
+            if callback and hasattr(callback, 'from_user') and callback.from_user is not None:
+                await bot.send_message(
+                    chat_id=callback.from_user.id,
+                    text=f"❌ Ошибка при отправке: {str(e)[:100]}"
+                )
+        except:
+            pass
+        
+        # Очищаем состояние
+        try:
+            await state.clear()
+        except:
+            pass
+        
+        # Безопасно отвечаем на callback
+        try:
+            if callback is not None:
+                await callback.answer("❌ Ошибка")
+        except:
+            pass
+
 # ========== СИСТЕМА УВЕДОМЛЕНИЙ ==========
 
 class SubscriptionNotifications:
@@ -5046,7 +5813,7 @@ class SubscriptionNotifications:
                 f"• Новые ранги и привилегии\n"
                 f"• Рост силы воли и дисциплины\n"
                 f"• Комьюнити единомышленников\n\n"
-                f"💪 <b>Вернись{gender['ending']} и продолжай{gender['ending']} путь к сильной версии себя!</b>\n"
+                f"💪 <b>Вернись и продолжай{gender['ending']} путь к сильной версии себя!</b>\n"
                 f"Твое место в челлендже все еще свободно."
             )
             
@@ -5072,7 +5839,7 @@ class SubscriptionNotifications:
                 f"• Каждый день без подписки - потерянный день роста\n"
                 f"• Дисциплина требует постоянства\n"
                 f"• Сила воли слабеет без тренировки\n\n"
-                f"🔥 <b>Вернись{gender['ending']} в строй пока не забыл{gender['ending']} навыки!</b>\n"
+                f"🔥 <b>Вернись в строй пока не забыл{gender['ending']} навыки!</b>\n"
                 f"Активируй{gender['ending_te']} подписку и продолжай{gender['ending']} с того места, где остановил{gender['ending']}ся."
             )
             
@@ -5099,7 +5866,7 @@ class SubscriptionNotifications:
                 f"• Дисциплина - это навык\n"
                 f"• Каждый день важен для прогресса\n\n"
                 f"🎯 <b>Не откладывай{gender['ending']} свою трансформацию!</b>\n"
-                f"Вернись{gender['ending']} в челлендж сегодня - завтра может быть поздно."
+                f"Вернись в челлендж сегодня - завтра может быть поздно."
             )
             
             from keyboards import get_payment_keyboard
@@ -5126,7 +5893,7 @@ class SubscriptionNotifications:
                     f"• Ежедневный рост\n"
                     f"• Дисциплина и порядок\n"
                     f"• Сообщество единомышленников\n\n"
-                    f"🔥 <b>Вернись{gender['ending']} к своей трансформации!</b>"
+                    f"🔥 <b>Вернись к своей трансформации!</b>"
                 )
             elif reminders_sent == 2:
                 message_text = (
@@ -5792,6 +6559,13 @@ async def back_to_main_from_task_callback(callback: CallbackQuery):
     await callback.answer()
 # ========== АДМИН ПАНЕЛЬ ==========
 
+class AdminStates(StatesGroup):
+    """Состояния для админ-панели"""
+    admin_viewing_users = State()
+    admin_viewing_user_details = State()
+    admin_waiting_user_message = State()
+    admin_waiting_add_days = State()
+
 @dp.message(F.text == "⚙️ Админ-панель")
 async def admin_panel(message: Message):
     """Показывает админ-панель"""
@@ -5851,20 +6625,629 @@ async def admin_stats(message: Message):
     await message.answer(stats_text, reply_markup=get_admin_stats_keyboard())
 
 @dp.message(F.text == "👥 Пользователи")
-async def admin_users(message: Message):
-    """Управление пользователями"""
+async def admin_users(message: Message, state: FSMContext):
+    """Управление пользователями - ПОЛНЫЙ СПИСОК С ПАГИНАЦИЕЙ"""
     user = message.from_user
     if not user or user.id != config.ADMIN_ID:
         return
+    
+    try:
+        # Очищаем состояние
+        await state.clear()
         
-    from keyboards import get_admin_users_keyboard
-    
-    users_text = (
-        "👥 <b>Управление пользователями</b>\n\n"
-        "Выберите действие для работы с пользователями:"
-    )
-    
-    await message.answer(users_text, reply_markup=get_admin_users_keyboard())
+        # Получаем всех пользователей
+        users = await utils.get_all_users()
+        
+        if not users:
+            await message.answer(
+                "👥 <b>Пользователи</b>\n\n"
+                "В базе нет пользователей.",
+                reply_markup=keyboards.get_admin_users_keyboard()
+            )
+            return
+        
+        # Преобразуем в список и сортируем по дате регистрации (новые первые)
+        users_list = []
+        for user_id_str, user_data in users.items():
+            try:
+                user_id = int(user_id_str)
+                users_list.append((user_id, user_data))
+            except:
+                continue
+        
+        # Сортируем по дате создания
+        users_list.sort(
+            key=lambda x: x[1].get('created_at', ''), 
+            reverse=True
+        )
+        
+        # Сохраняем в состояние
+        await state.update_data(
+            admin_users_list=users_list,
+            admin_users_page=0,
+            admin_users_total=len(users_list)
+        )
+        
+        # Показываем первую страницу
+        await show_users_page(message, state, page=0)
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка в admin_users: {e}")
+        await message.answer(
+            f"❌ Ошибка загрузки пользователей: {str(e)[:100]}",
+            reply_markup=keyboards.get_admin_users_keyboard()
+        )
+
+@dp.message(AdminStates.admin_viewing_users)
+async def admin_users_search_process(message: Message, state: FSMContext):
+    """Обработка поискового запроса - ИСПРАВЛЕННАЯ ВЕРСИЯ"""
+    try:
+        # 1. Проверяем message на None
+        if message is None:
+            logger.error("❌ admin_users_search_process: message is None")
+            return
+        
+        # 2. Проверяем from_user на None
+        if not hasattr(message, 'from_user') or message.from_user is None:
+            logger.error("❌ admin_users_search_process: message.from_user is None")
+            return
+        
+        # 3. Проверяем права администратора
+        if message.from_user.id != config.ADMIN_ID:
+            return
+        
+        # 4. Проверяем текст на None
+        if not hasattr(message, 'text') or message.text is None:
+            await message.answer("❌ Введите текст для поиска")
+            return
+        
+        search_query = message.text.strip()
+        
+        if not search_query:
+            await message.answer("❌ Введите текст для поиска")
+            return
+        
+        await message.answer(f"🔍 <b>Поиск:</b> '{search_query}'...")
+        
+        # 5. Получаем всех пользователей
+        users = await utils.get_all_users()
+        results = []
+        
+        for user_id_str, user_data in users.items():
+            try:
+                user_id = int(user_id_str)
+                
+                # Поиск по ID
+                if search_query.isdigit() and int(search_query) == user_id:
+                    results.append((user_id, user_data))
+                    continue
+                
+                # Поиск по username (без @)
+                username = user_data.get('username', '').lower()
+                if search_query.lower().lstrip('@') in username:
+                    results.append((user_id, user_data))
+                    continue
+                
+                # Поиск по имени
+                first_name = user_data.get('first_name', '').lower()
+                if search_query.lower() in first_name:
+                    results.append((user_id, user_data))
+                    continue
+                    
+            except Exception as e:
+                logger.error(f"❌ Ошибка обработки пользователя {user_id_str}: {e}")
+                continue
+        
+        # 6. Клавиатура для возврата
+        back_keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="👥 Все пользователи", callback_data="admin_users_back")]
+            ]
+        )
+        
+        if not results:
+            await message.answer(
+                f"❌ Пользователи по запросу '{search_query}' не найдены",
+                reply_markup=back_keyboard
+            )
+            return
+        
+        # 7. Сохраняем результаты в состояние
+        await state.update_data(
+            admin_users_list=results,
+            admin_users_page=0
+        )
+        
+        # 8. Показываем первую страницу результатов
+        await show_users_page(message, state, page=0)
+        
+    except Exception as e:
+        logger.error(f"❌ Критическая ошибка в admin_users_search_process: {e}", exc_info=True)
+        await message.answer("❌ Ошибка при поиске")
+        
+@dp.callback_query(F.data == "admin_users_search")
+async def admin_users_search_handler(callback: CallbackQuery, state: FSMContext):
+    """Поиск пользователей - ИСПРАВЛЕННАЯ ВЕРСИЯ"""
+    try:
+        # 1. Проверяем callback на None
+        if callback is None:
+            logger.error("❌ admin_users_search_handler: callback is None")
+            return
+        
+        # 2. Проверяем from_user на None
+        if not hasattr(callback, 'from_user') or callback.from_user is None:
+            logger.error("❌ admin_users_search_handler: callback.from_user is None")
+            return
+        
+        # 3. Проверяем права администратора
+        if callback.from_user.id != config.ADMIN_ID:
+            try:
+                await callback.answer("⛔ Нет доступа")
+            except:
+                pass
+            return
+        
+        # 4. Проверяем message на None
+        if not hasattr(callback, 'message') or callback.message is None:
+            try:
+                await callback.answer("❌ Ошибка: сообщение не найдено")
+            except:
+                pass
+            return
+        
+        # 5. Создаем клавиатуру для поиска
+        search_keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="👥 Все пользователи", callback_data="admin_users_back")]
+            ]
+        )
+        
+        # 6. Безопасно редактируем сообщение
+        try:
+            await callback.message.edit_text(
+                "🔍 <b>ПОИСК ПОЛЬЗОВАТЕЛЕЙ</b>\n\n"
+                "Введите для поиска:\n"
+                "• ID пользователя (только цифры)\n"
+                "• @username\n"
+                "• Имя или часть имени\n\n"
+                "Примеры:\n"
+                "<code>123456789</code>\n"
+                "<code>@username</code>\n"
+                "<code>Иван</code>\n\n"
+                "Или нажмите кнопку ниже для просмотра всех пользователей:",
+                reply_markup=search_keyboard
+            )
+        except Exception as e:
+            logger.error(f"❌ Ошибка редактирования сообщения: {e}")
+            # Если не удалось отредактировать, отправляем новое сообщение
+            try:
+                await callback.message.answer(
+                    "🔍 <b>ПОИСК ПОЛЬЗОВАТЕЛЕЙ</b>\n\n"
+                    "Введите для поиска:\n"
+                    "• ID пользователя (только цифры)\n"
+                    "• @username\n"
+                    "• Имя или часть имени\n\n"
+                    "Примеры:\n"
+                    "<code>123456789</code>\n"
+                    "<code>@username</code>\n"
+                    "<code>Иван</code>\n\n"
+                    "Или нажмите кнопку ниже для просмотра всех пользователей:",
+                    reply_markup=search_keyboard
+                )
+            except:
+                pass
+        
+        # 7. Устанавливаем состояние для поиска
+        await state.set_state(AdminStates.admin_viewing_users)
+        
+        # 8. Безопасно отвечаем на callback
+        try:
+            await callback.answer("🔍 Введите запрос для поиска")
+        except:
+            pass
+        
+    except Exception as e:
+        logger.error(f"❌ Критическая ошибка в admin_users_search_handler: {e}", exc_info=True)
+        try:
+            await callback.answer("❌ Ошибка")
+        except:
+            pass
+
+async def show_users_page(message_or_callback, state: FSMContext, page: int):
+    """Показывает страницу со списком пользователей - ИСПРАВЛЕННАЯ ВЕРСИЯ"""
+    try:
+        # Получаем данные из состояния
+        data = await state.get_data()
+        users_list = data.get('admin_users_list', [])
+        total_users = len(users_list)
+        
+        if not users_list:
+            text = "👥 <b>Пользователи</b>\n\nВ базе нет пользователей."
+            
+            # Проверяем тип и отправляем сообщение
+            if isinstance(message_or_callback, CallbackQuery):
+                if message_or_callback is not None and hasattr(message_or_callback, 'message') and message_or_callback.message is not None:
+                    try:
+                        await message_or_callback.message.edit_text(
+                            text,
+                            reply_markup=keyboards.get_admin_users_keyboard()
+                        )
+                    except Exception as e:
+                        logger.error(f"Ошибка редактирования: {e}")
+                        await message_or_callback.message.answer(
+                            text,
+                            reply_markup=keyboards.get_admin_users_keyboard()
+                        )
+                try:
+                    await message_or_callback.answer()
+                except:
+                    pass
+            else:
+                if message_or_callback is not None:
+                    await message_or_callback.answer(
+                        text,
+                        reply_markup=keyboards.get_admin_users_keyboard()
+                    )
+            return
+        
+        # Настройки пагинации
+        USERS_PER_PAGE = 15
+        total_pages = (total_users + USERS_PER_PAGE - 1) // USERS_PER_PAGE
+        
+        # Корректируем номер страницы
+        page = max(0, min(page, total_pages - 1))
+        start_idx = page * USERS_PER_PAGE
+        end_idx = min(start_idx + USERS_PER_PAGE, total_users)
+        
+        # Сохраняем текущую страницу
+        await state.update_data(
+            admin_users_page=page,
+            admin_users_total_pages=total_pages
+        )
+        
+        # Формируем текст
+        text = (
+            f"👥 <b>ВСЕ ПОЛЬЗОВАТЕЛИ</b>\n"
+            f"📊 Всего: {total_users} | Страница {page + 1}/{total_pages}\n\n"
+        )
+        
+        # Добавляем пользователей на текущей странице
+        for i, (user_id, user_data) in enumerate(users_list[start_idx:end_idx], start_idx + 1):
+            # Основная информация
+            first_name = user_data.get('first_name', 'Без имени')
+            username = user_data.get('username', '')
+            archetype = user_data.get('archetype', 'spartan')
+            archetype_icon = '🛡️' if archetype == 'spartan' else '⚔️'
+            
+            # Статус подписки
+            if await utils.is_subscription_active(user_data):
+                status = '💎'  # Платная подписка
+            elif await utils.is_in_trial_period(user_data):
+                status = '🎁'  # Пробный период
+            else:
+                status = '❌'  # Нет подписки
+            
+            # День и выполненные задания
+            current_day = user_data.get('current_day', 0)
+            completed_tasks = user_data.get('completed_tasks', 0)
+            rank = user_data.get('rank', 'putnik')
+            
+            # Форматируем username
+            username_display = f"@{username}" if username else "нет username"
+            
+            # Делаем ID кликабельным для просмотра деталей
+            text += (
+                f"{i}. {status} {archetype_icon} <b>{first_name}</b>\n"
+                f"   🆔 <code>{user_id}</code> | 📱 {username_display}\n"
+                f"   📅 День {current_day} | ✅ {completed_tasks} зад. | 🏆 {rank}\n"
+            )
+            
+            # Добавляем дату регистрации
+            created_at = user_data.get('created_at', '')
+            if created_at:
+                created_short = created_at[:10] if len(created_at) > 10 else created_at
+                text += f"   📆 Регистрация: {created_short}\n"
+            
+            text += "\n"
+        
+        # Создаем клавиатуру с пагинацией
+        keyboard_buttons = []
+        
+        # Кнопки навигации
+        nav_buttons = []
+        if page > 0:
+            nav_buttons.append(InlineKeyboardButton(
+                text="◀️ Пред.", 
+                callback_data=f"admin_users_page_{page - 1}"
+            ))
+        
+        nav_buttons.append(InlineKeyboardButton(
+            text=f"{page + 1}/{total_pages}", 
+            callback_data="admin_users_current_page"
+        ))
+        
+        if page < total_pages - 1:
+            nav_buttons.append(InlineKeyboardButton(
+                text="След. ▶️", 
+                callback_data=f"admin_users_page_{page + 1}"
+            ))
+        
+        if nav_buttons:
+            keyboard_buttons.append(nav_buttons)
+        
+        # Кнопки поиска и экспорта
+        keyboard_buttons.append([
+            InlineKeyboardButton(text="🔍 Поиск", callback_data="admin_users_search"),
+            InlineKeyboardButton(text="📥 Экспорт", callback_data="admin_users_export")
+        ])
+        
+        # Кнопка назад
+        keyboard_buttons.append([
+            InlineKeyboardButton(text="🔙 Назад в админку", callback_data="admin_back")
+        ])
+        
+        keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
+        
+        # Отправляем или редактируем сообщение
+        if isinstance(message_or_callback, CallbackQuery):
+            if message_or_callback is not None and hasattr(message_or_callback, 'message') and message_or_callback.message is not None:
+                try:
+                    await message_or_callback.message.edit_text(text, reply_markup=keyboard)
+                except Exception as e:
+                    logger.error(f"Ошибка редактирования: {e}")
+                    try:
+                        await message_or_callback.message.answer(text, reply_markup=keyboard)
+                    except:
+                        pass
+            try:
+                await message_or_callback.answer()
+            except:
+                pass
+        else:
+            if message_or_callback is not None:
+                await message_or_callback.answer(text, reply_markup=keyboard)
+            
+    except Exception as e:
+        logger.error(f"❌ Критическая ошибка в show_users_page: {e}", exc_info=True)
+        if isinstance(message_or_callback, CallbackQuery):
+            try:
+                await message_or_callback.answer("❌ Ошибка загрузки")
+            except:
+                pass
+
+@dp.callback_query(F.data.startswith("admin_users_page_"))
+async def admin_users_page_handler(callback: CallbackQuery, state: FSMContext):
+    """Переключение страниц списка пользователей - ИСПРАВЛЕННАЯ ВЕРСИЯ"""
+    try:
+        # 1. Проверяем callback на None
+        if callback is None:
+            logger.error("❌ admin_users_page_handler: callback is None")
+            return
+        
+        # 2. Проверяем from_user на None
+        if not hasattr(callback, 'from_user') or callback.from_user is None:
+            logger.error("❌ admin_users_page_handler: callback.from_user is None")
+            return
+        
+        # 3. Проверяем права администратора
+        if callback.from_user.id != config.ADMIN_ID:
+            try:
+                await callback.answer("⛔ Нет доступа")
+            except:
+                pass
+            return
+        
+        # 4. Проверяем data на None
+        if not hasattr(callback, 'data') or callback.data is None:
+            try:
+                await callback.answer("❌ Ошибка данных")
+            except:
+                pass
+            return
+        
+        # 5. Безопасно извлекаем номер страницы
+        try:
+            callback_data = str(callback.data)
+            page = int(callback_data.replace("admin_users_page_", ""))
+        except (ValueError, AttributeError) as e:
+            logger.error(f"❌ Ошибка преобразования страницы: {e}")
+            try:
+                await callback.answer("❌ Неверный номер страницы")
+            except:
+                pass
+            return
+        
+        # 6. Получаем данные из состояния
+        data = await state.get_data()
+        users_list = data.get('admin_users_list', [])
+        
+        # 7. Если список пуст, загружаем всех пользователей
+        if not users_list:
+            users = await utils.get_all_users()
+            users_list = []
+            for user_id_str, user_data in users.items():
+                try:
+                    users_list.append((int(user_id_str), user_data))
+                except:
+                    continue
+            
+            # Сортируем по дате создания
+            users_list.sort(
+                key=lambda x: x[1].get('created_at', ''), 
+                reverse=True
+            )
+            
+            # Сохраняем в состояние
+            await state.update_data(
+                admin_users_list=users_list,
+                admin_users_page=page
+            )
+        
+        # 8. Показываем страницу
+        await show_users_page(callback, state, page)
+        
+    except Exception as e:
+        logger.error(f"❌ Критическая ошибка в admin_users_page_handler: {e}", exc_info=True)
+        try:
+            await callback.answer("❌ Ошибка")
+        except:
+            pass
+
+@dp.callback_query(F.data == "admin_users_export")
+async def admin_users_export_handler(callback: CallbackQuery, state: FSMContext):
+    """Экспорт списка пользователей в CSV"""
+    try:
+        if callback is None:
+            return
+        
+        if not hasattr(callback, 'from_user') or callback.from_user is None:
+            return
+        
+        if callback.from_user.id != config.ADMIN_ID:
+            try:
+                await callback.answer("⛔ Нет доступа")
+            except:
+                pass
+            return
+        
+        if not hasattr(callback, 'message') or callback.message is None:
+            try:
+                await callback.answer("❌ Ошибка сообщения")
+            except:
+                pass
+            return
+        
+        data = await state.get_data()
+        users_list = data.get('admin_users_list', [])
+        
+        if not users_list:
+            users = await utils.get_all_users()
+            users_list = []
+            for user_id_str, user_data in users.items():
+                try:
+                    users_list.append((int(user_id_str), user_data))
+                except:
+                    continue
+        
+        if not users_list:
+            await callback.answer("❌ Нет пользователей для экспорта")
+            return
+        
+        # Создаем CSV файл
+        import csv
+        import io
+        from datetime import datetime
+        
+        output = io.StringIO()
+        writer = csv.writer(output)
+        
+        # Заголовки
+        writer.writerow([
+            'ID', 'Имя', 'Username', 'Архетип', 'Часовой пояс',
+            'День', 'Заданий', 'Ранг', 'Подписка', 'Пробный',
+            'Рефералов', 'Заработано', 'Дата регистрации', 'Последняя активность'
+        ])
+        
+        # Данные
+        for user_id, user_data in users_list:
+            archetype = user_data.get('archetype', 'spartan')
+            has_sub = await utils.is_subscription_active(user_data)
+            in_trial = await utils.is_in_trial_period(user_data)
+            
+            writer.writerow([
+                user_id,
+                user_data.get('first_name', ''),
+                user_data.get('username', ''),
+                'Спартанец' if archetype == 'spartan' else 'Амазонка',
+                user_data.get('timezone', ''),
+                user_data.get('current_day', 0),
+                user_data.get('completed_tasks', 0),
+                user_data.get('rank', ''),
+                'Да' if has_sub else 'Нет',
+                'Да' if in_trial else 'Нет',
+                len(user_data.get('referrals', [])),
+                user_data.get('referral_earnings', 0),
+                user_data.get('created_at', '')[:10],
+                user_data.get('last_activity', '')[:10]
+            ])
+        
+        # Отправляем файл
+        from aiogram.types import BufferedInputFile
+        
+        csv_data = output.getvalue().encode('utf-8-sig')
+        filename = f"users_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        
+        await callback.message.answer_document(
+            BufferedInputFile(csv_data, filename=filename),
+            caption=f"📊 Экспорт пользователей ({len(users_list)} записей)"
+        )
+        
+        try:
+            await callback.answer("✅ Экспорт завершен")
+        except:
+            pass
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка экспорта: {e}")
+        try:
+            await callback.answer("❌ Ошибка экспорта")
+        except:
+            pass
+
+@dp.callback_query(F.data == "admin_users_back")
+async def admin_users_back_handler(callback: CallbackQuery, state: FSMContext):
+    """Возврат к списку пользователей - ИСПРАВЛЕННАЯ ВЕРСИЯ"""
+    try:
+        if callback is None:
+            return
+        
+        if not hasattr(callback, 'from_user') or callback.from_user is None:
+            return
+        
+        if callback.from_user.id != config.ADMIN_ID:
+            try:
+                await callback.answer("⛔ Нет доступа")
+            except:
+                pass
+            return
+        
+        if not hasattr(callback, 'message') or callback.message is None:
+            try:
+                await callback.answer("❌ Ошибка сообщения")
+            except:
+                pass
+            return
+        
+        # Получаем всех пользователей заново
+        users = await utils.get_all_users()
+        users_list = []
+        for user_id_str, user_data in users.items():
+            try:
+                users_list.append((int(user_id_str), user_data))
+            except:
+                continue
+        
+        # Сортируем по дате создания (новые первые)
+        users_list.sort(
+            key=lambda x: x[1].get('created_at', ''), 
+            reverse=True
+        )
+        
+        # Сохраняем в состояние
+        await state.update_data(
+            admin_users_list=users_list,
+            admin_users_page=0
+        )
+        
+        # Показываем первую страницу
+        await show_users_page(callback, state, 0)
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка в admin_users_back_handler: {e}")
+        try:
+            await callback.answer("❌ Ошибка")
+        except:
+            pass
 
 @dp.message(F.text == "💳 Платежи")
 async def admin_payments(message: Message):
@@ -6350,124 +7733,170 @@ async def invite_list_handler(callback: CallbackQuery):
     )
     await callback.answer()
 
-@dp.message(F.text == "🎫 Активировать инвайт")
-async def activate_invite_command(message: Message, state: FSMContext):
-    """Активация инвайт-кода"""
-    user = message.from_user
-    if not user:
-        return
+@dp.message(Command("cancel"))
+async def cancel_command(message: Message, state: FSMContext):
+    """Отмена текущего действия"""
+    try:
+        if not message or not message.from_user:
+            return
         
-    user_id = user.id
-    user_data = await utils.get_user(user_id)
-    
-    if not user_data:
-        await message.answer("Сначала зарегистрируйся через /start")
-        return
-    
-    await message.answer(
-        "🎫 <b>Активация инвайт-кода</b>\n\n"
-        "Введите инвайт-код для активации подписки:"
-    )
-    await state.set_state(UserStates.waiting_for_invite)
+        current_state = await state.get_state()
+        
+        if current_state is None:
+            await message.answer("❌ Нет активного действия для отмены")
+            return
+        
+        await state.clear()
+        
+        user_id = message.from_user.id
+        user_data = await utils.get_user(user_id)
+        
+        if user_data:
+            await message.answer(
+                "✅ Действие отменено",
+                reply_markup=keyboards.get_main_menu(user_id)
+            )
+        else:
+            await message.answer(
+                "✅ Действие отменено",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            
+    except Exception as e:
+        logger.error(f"❌ Ошибка в cancel_command: {e}")
+        await state.clear()
+
 
 @dp.message(UserStates.waiting_for_invite)
 async def process_invite_code(message: Message, state: FSMContext):
-    """Обработка введенного инвайт-кода с немедленной отправкой задания"""
-    user = message.from_user
-    if not user:
-        await message.answer("Ошибка: пользователь не найден")
-        return
-    
-    # ПРОВЕРЯЕМ, ЧТО message.text НЕ NONE
-    if not message.text or message.text is None:
-        await message.answer("Пожалуйста, введите инвайт-код:")
-        return
+    """Обработка введенного инвайт-кода - ИСПРАВЛЕННАЯ ВЕРСИЯ"""
+    try:
+        # 1. Проверяем message на None
+        if message is None:
+            logger.error("❌ process_invite_code: message is None")
+            await state.clear()
+            return
         
-    invite_code = message.text.strip()
-    
-    # ДОПОЛНИТЕЛЬНАЯ ПРОВЕРКА НА ПУСТОЙ СТРОКУ
-    if not invite_code:
-        await message.answer("Пожалуйста, введите инвайт-код:")
-        return
+        # 2. Проверяем from_user на None
+        if not hasattr(message, 'from_user') or message.from_user is None:
+            logger.error("❌ process_invite_code: message.from_user is None")
+            await state.clear()
+            return
         
-    user_id = user.id
-    user_data = await utils.get_user(user_id)
-    
-    if not user_data:
-        await message.answer("Сначала зарегистрируйся через /start")
-        await state.clear()
-        return
-    
-    success, result = await utils.use_invite_code(invite_code, user_id)
-    
-    if success:
-        invite_data = result
-        days = invite_data.get('days', 30)
-        updated_user_data = await utils.add_subscription_days(user_data, days)
-        await utils.save_user(user_id, updated_user_data)
+        user_id = message.from_user.id
         
-        # Основное сообщение
-        await message.answer(
-            f"✅ <b>Инвайт-код активирован!</b>\n\n"
-            f"Вам добавлено <b>{days}</b> дней подписки.\n"
-            f"Тип: {invite_data.get('name', 'Подписка')}\n\n"
-            f"Теперь у вас есть доступ ко всем заданиям! 🎉",
-            reply_markup=keyboards.get_main_menu(user.id)
-        )
+        # 3. Получаем данные пользователя
+        user_data = await utils.get_user(user_id)
         
-        # 🔥 КРИТИЧЕСКО ВАЖНО: ОТПРАВЛЯЕМ ЗАДАНИЕ НЕМЕДЛЕННО
+        if not user_data:
+            await message.answer("❌ Сначала зарегистрируйся через /start")
+            await state.clear()
+            return
+        
+        # 4. Проверка на команду отмены
+        if hasattr(message, 'text') and message.text is not None:
+            if message.text.lower() in ['/cancel', 'отмена', 'cancel']:
+                await message.answer(
+                    "❌ Ввод кода отменен",
+                    reply_markup=keyboards.get_main_menu(user_id) if user_data else ReplyKeyboardRemove()
+                )
+                await state.clear()
+                return
+        else:
+            await message.answer("❌ Пожалуйста, введите инвайт-код:")
+            return
+        
+        # 5. Проверяем наличие текста
+        if not message.text or message.text.strip() == "":
+            await message.answer("❌ Пожалуйста, введите инвайт-код:")
+            return
+            
+        invite_code = message.text.strip()
+        
+        # 6. Активируем код
+        success, result = await utils.use_invite_code(invite_code, user_id)
+        
+        if success:
+            invite_data = result
+            days = invite_data.get('days', 30)
+            updated_user_data = await utils.add_subscription_days(user_data, days)
+            await utils.save_user(user_id, updated_user_data)
+            
+            await message.answer(
+                f"✅ <b>Инвайт-код активирован!</b>\n\n"
+                f"Вам добавлено <b>{days}</b> дней подписки.\n"
+                f"Тип: {invite_data.get('name', 'Подписка')}\n\n"
+                f"Теперь у вас есть доступ ко всем заданиям! 🎉",
+                reply_markup=keyboards.get_main_menu(user_id)
+            )
+            
+            # Отправляем задание
+            try:
+                current_day = updated_user_data.get('current_day', 0)
+                next_day = current_day + 1
+                
+                if next_day == 0:
+                    next_day = 1
+                    
+                task_id, task = await utils.get_task_by_day(next_day, updated_user_data.get('archetype', 'spartan'))
+                
+                if task:
+                    task_message = (
+                        f"📋 <b>Новое задание!</b>\n\n"
+                        f"<b>День {next_day}/300</b>\n\n"
+                        f"{task['text']}\n\n"
+                        f"⏰ <b>Выполни задание до 23:59</b>\n\n"
+                        f"<i>Отмечай выполнение кнопками ниже 👇</i>"
+                    )
+                    
+                    await bot.send_message(
+                        chat_id=user_id,
+                        text=task_message,
+                        reply_markup=keyboards.task_keyboard,
+                        disable_web_page_preview=True
+                    )
+                    
+                    updated_user_data['last_task_sent'] = datetime.now().isoformat()
+                    updated_user_data['task_completed_today'] = False
+                    await utils.save_user(user_id, updated_user_data)
+                    
+            except Exception as e:
+                logger.error(f"❌ Ошибка отправки задания: {e}")
+            
+            # Очищаем состояние после успешной активации
+            await state.clear()
+            
+        else:
+            error_message = result
+            # Оставляем состояние активным для повторного ввода
+            await message.answer(
+                f"❌ <b>Не удалось активировать код</b>\n\n"
+                f"{error_message}\n\n"
+                f"Попробуйте другой код или введите /cancel для отмены"
+            )
+            # НЕ очищаем состояние здесь
+        
+        # Обновляем активность
+        await utils.update_user_activity(user_id)
+        
+    except Exception as e:
+        logger.error(f"❌ Критическая ошибка в process_invite_code: {e}", exc_info=True)
+        
+        # Безопасно отправляем сообщение об ошибке
         try:
-            # Получаем следующий день (текущий день + 1)
-            current_day = updated_user_data.get('current_day', 0)
-            next_day = current_day + 1
-            
-            # Если пользователь только начал (день 0), ставим день 1
-            if next_day == 0:
-                next_day = 1
+            if message is not None and hasattr(message, 'from_user') and message.from_user is not None:
+                user_id = message.from_user.id
+                user_data = await utils.get_user(user_id)
                 
-            # Получаем задание для следующего дня
-            task_id, task = await utils.get_task_by_day(next_day, updated_user_data.get('archetype', 'spartan'))
-            
-            if task:
-                # Форматируем сообщение с заданием
-                task_message = (
-                    f"📋 <b>Новое задание!</b>\n\n"
-                    f"<b>День {next_day}/300</b>\n\n"
-                    f"{task['text']}\n\n"
-                    f"⏰ <b>Выполни задание до 23:59</b>\n\n"
-                    f"<i>Отмечай выполнение кнопками ниже 👇</i>"
+                await message.answer(
+                    "❌ Произошла ошибка. Попробуйте позже.",
+                    reply_markup=keyboards.get_main_menu(user_id) if user_data else ReplyKeyboardRemove()
                 )
-                
-                # Отправляем задание
-                await bot.send_message(
-                    chat_id=user_id,
-                    text=task_message,
-                    reply_markup=keyboards.task_keyboard,
-                    disable_web_page_preview=True
-                )
-                
-                # Обновляем данные пользователя
-                updated_user_data['last_task_sent'] = datetime.now().isoformat()
-                updated_user_data['task_completed_today'] = False
-                await utils.save_user(user_id, updated_user_data)
-                
-                logger.info(f"✅ Задание дня {next_day} отправлено пользователю {user_id} после активации инвайт-кода")
-            else:
-                logger.warning(f"⚠️ Не найдено задание дня {next_day} для пользователя {user_id}")
-                
-        except Exception as e:
-            logger.error(f"❌ Ошибка отправки задания после активации инвайт-кода пользователю {user_id}: {e}")
+        except:
+            pass
         
+        # Очищаем состояние
         await state.clear()
-    else:
-        error_message = result
-        await message.answer(
-            f"❌ <b>Не удалось активировать код</b>\n\n"
-            f"{error_message}\n\n"
-            f"Попробуйте другой код или обратитесь в поддержку: {config.SUPPORT_USERNAME}"
-        )
-    
-    await utils.update_user_activity(user_id)
 
 # ========== ОБРАБОТЧИКИ РЕФЕРАЛЬНОЙ ПРОГРАММЫ ==========
 
@@ -7211,33 +8640,6 @@ async def admin_users_list_handler(callback: CallbackQuery):
     await callback.message.edit_text(message_text, reply_markup=get_admin_users_keyboard())
     await callback.answer()
 
-@dp.callback_query(F.data == "admin_users_search")
-async def admin_users_search_handler(callback: CallbackQuery):
-    """Поиск пользователя"""
-    user = callback.from_user
-    if not user or user.id != config.ADMIN_ID:
-        await callback.answer("⛔ Нет доступа")
-        return
-        
-    if not callback.message:
-        await callback.answer("Ошибка")
-        return
-    
-    message_text = (
-        "🔍 <b>Поиск пользователя</b>\n\n"
-        "Для поиска пользователя отправьте:\n"
-        "<code>ПОИСК|ID_пользователя</code> - поиск по ID\n"
-        "<code>ПОИСК|username</code> - поиск по username\n"
-        "<code>ПОИСК|имя</code> - поиск по имени\n\n"
-        "<b>Примеры:</b>\n"
-        "<code>ПОИСК|123456789</code>\n"
-        "<code>ПОИСК|ivanov</code>\n"
-        "<code>ПОИСК|Иван</code>"
-    )
-    
-    from keyboards import get_admin_users_keyboard
-    await callback.message.edit_text(message_text, reply_markup=get_admin_users_keyboard())
-    await callback.answer()
 
 @dp.callback_query(F.data == "admin_users_message")
 async def admin_users_message_handler(callback: CallbackQuery):

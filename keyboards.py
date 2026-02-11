@@ -284,3 +284,20 @@ def get_ready_keyboard():
         [KeyboardButton(text="❌ Нет, я передумал")]
     ]
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+
+
+# МЕНЮ МАССОВОЙ РАССЫЛКИ
+def get_mass_notification_keyboard():
+    """Клавиатура для массовой рассылки"""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="👥 Всем пользователям", callback_data="mass_all")],
+            [InlineKeyboardButton(text="✅ Активным", callback_data="mass_active")],
+            [InlineKeyboardButton(text="❌ Неактивным", callback_data="mass_inactive")],
+            [InlineKeyboardButton(text="💎 С подпиской", callback_data="mass_subscribed")],
+            [InlineKeyboardButton(text="🎁 В пробном периоде", callback_data="mass_trial")],
+            [InlineKeyboardButton(text="🚫 Без подписки", callback_data="mass_no_sub")],
+            [InlineKeyboardButton(text="📊 Просмотр прошлых рассылок", callback_data="mass_history")],
+            [InlineKeyboardButton(text="🔙 Назад в админку", callback_data="admin_back")]
+        ]
+    )
