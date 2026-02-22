@@ -476,10 +476,15 @@ async def can_receive_new_task(user_data: dict) -> bool:
 # ========== ФУНКЦИИ ПОДПИСКИ ==========
 
 async def is_subscription_active(user_data):
-    """Проверяет активна ли подписка (исправленная версия)"""
+    """Проверяет активна ли подписка (исправленная версия с учетом пожизненной)"""
     if not user_data:
         logger.debug(f"❌ Нет данных пользователя")
         return False
+    
+    # Пожизненная подписка всегда активна
+    if user_data.get('subscription_type') == 'forever':
+        logger.debug(f"♾️ Пожизненная подписка активна")
+        return True
     
     subscription_end = user_data.get('subscription_end')
     if not subscription_end:
@@ -495,8 +500,7 @@ async def is_subscription_active(user_data):
             sub_end = datetime.fromisoformat(subscription_end)
         except ValueError:
             # Если не ISO формат, используем простой парсинг
-            # Убираем временную зону если есть
-            date_str = subscription_end.split('+')[0].split('.')[0]  # Убираем временную зону и микросекунды
+            date_str = subscription_end.split('+')[0].split('.')[0]
             sub_end = datetime.strptime(date_str, '%Y-%m-%d %H:%M:%S')
         
         # Убеждаемся, что у даты есть часовой пояс
@@ -505,31 +509,22 @@ async def is_subscription_active(user_data):
             sub_end = moscow_tz.localize(sub_end)
         
         now = datetime.now(pytz.UTC)
-        # Конвертируем sub_end в UTC для сравнения
         sub_end_utc = sub_end.astimezone(pytz.UTC)
         
         is_active = now < sub_end_utc
         
-        # ЛОГИРУЕМ для отладки
-        logger.info(f"🔍 Проверка подписки:")
-        logger.info(f"   📅 Дата окончания: {subscription_end}")
-        logger.info(f"   📅 Parsed date: {sub_end}")
-        logger.info(f"   📅 UTC date: {sub_end_utc}")
-        logger.info(f"   ⏰ Текущее время (UTC): {now.isoformat()}")
-        logger.info(f"   ✅ Активна: {is_active}")
-        
         if is_active:
             days_left = (sub_end_utc - now).days
-            logger.info(f"   ⏰ Осталось дней: {days_left}")
+            logger.debug(f"✅ Подписка активна, осталось {days_left} дней")
+        else:
+            logger.debug(f"❌ Подписка истекла")
         
         return is_active
         
     except Exception as e:
         logger.error(f"❌ Ошибка проверки подписки: {e}")
-        logger.error(f"📅 Проблемная дата: {subscription_end}")
-        logger.error(f"📊 Все данные пользователя: {user_data}")
         return False
-
+    
 async def add_subscription_days(user_data, days):
     """Добавляет дни подписки (исправленная версия)"""
     if not isinstance(user_data, dict):

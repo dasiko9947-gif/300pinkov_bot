@@ -3,35 +3,49 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv()
+
 TIMEZONE = "Europe/Moscow"
 BOT_TOKEN = os.getenv('TELEGRAM_TOKEN')
 ADMIN_ID = int(os.getenv('ADMIN_ID', '1296962464'))
 BANK_CARD = os.getenv('BANK_CARD', '2200 1234 5678 9010')
-SUPPORT_USERNAME = os.getenv('SUPPORT_USERNAME', '@admin')
+SUPPORT_USERNAME = os.getenv('SUPPORT_USERNAME', '@vladgrigoryan')
+
 # ЮKassa настройки
 YOOKASSA_SHOP_ID = os.getenv("YOOKASSA_SHOP_ID", "your_shop_id")
 YOOKASSA_SECRET_KEY = os.getenv("YOOKASSA_SECRET_KEY", "your_secret_key")
-YOOKASSA_RETURN_URL = "https://t.me/pinkov300_bot"  # URL для возврата после оплаты
+YOOKASSA_RETURN_URL = "https://t.me/pinkov300_bot"
+
 # Пути к файлам
 BASE_DIR = Path(__file__).parent
 USERS_FILE = BASE_DIR / 'users_data.json'
 TASKS_FILE = BASE_DIR / 'tasks_data.json'
 PAYMENTS_FILE = BASE_DIR / 'payments_data.json'
 INVITE_CODES_FILE = BASE_DIR / 'invite_codes.json'
+WITHDRAWALS_FILE = BASE_DIR / 'withdrawals_data.json'
+TRANSACTIONS_FILE = BASE_DIR / 'transactions_data.json'
 
-# Тарифы
+# Тарифы подписки
 TARIFFS = {
-    "month": {"name": "Месячная подписка", "price": 300, "days": 30},  # 30 дней, а не 31
-    "year": {"name": "Годовая подписка", "price": 3000, "days": 365},
-    "pair_year": {"name": "👥 Парная годовая", "price": 5000, "days": 365},
+    "month": {
+        "name": "Месячная подписка",
+        "price": 300,
+        "days": 30,
+        "description": "Доступ на 30 дней"
+    },
+    "forever": {
+        "name": "Пожизненная подписка",
+        "price": 1990,
+        "days": 36500,  # 100 лет (фактически навсегда)
+        "description": "Доступ навсегда"
+    }
 }
+
 # Настройки сертификатов
 CERTIFICATES_DIR = "certificates/generated"
 CERTIFICATES_BASE_URL = os.getenv("CERTIFICATES_BASE_URL", "https://ваш-домен.ру/certificates")
 
-# Добавьте или обновите эти настройки:
 BOT_USERNAME = "pinkov300_bot"  
-SUPPORT_USERNAME = "@vladgrigoryan" 
+
 # ЧАСОВЫЕ ПОЯСА РОССИИ
 RUSSIAN_TIMEZONES = {
     "Калининград (UTC+2)": "Europe/Kaliningrad",
@@ -46,7 +60,6 @@ RUSSIAN_TIMEZONES = {
     "Магадан (UTC+11)": "Asia/Magadan",
     "Камчатка (UTC+12)": "Asia/Kamchatka"
 }
-# Разделение тарифов для раннего доступа
 
 # Реферальная система
 REFERRAL_LEVELS = {
@@ -64,24 +77,20 @@ WITHDRAWAL_METHODS = {
     "tinkoff": "Тинькофф",
 }
 
-# Файлы данных
-WITHDRAWALS_FILE = BASE_DIR / 'withdrawals_data.json'
-TRANSACTIONS_FILE = BASE_DIR / 'transactions_data.json'
-
 # Лимиты
 DAILY_WITHDRAWAL_LIMIT = 50000  # Максимальный вывод в день
 MAX_WITHDRAWALS_PER_DAY = 3     # Максимум заявок в день
 
-# Новая система рангов (основана на выполненных заданиях)
+# Система рангов
 RANKS = {
     "putnik": {
-        "completed_tasks": 0,  # 0-30 выполненных заданий
+        "completed_tasks": 0,
         "name": "🥋 Путник",
         "description": "Твой вызов: Довериться системе и честно выполнять задания.",
         "privileges": ["Бесплатный канал 300 ПИНКОВ"]
     },
     "voin": {
-        "completed_tasks": 31,  # 31-100 выполненных заданий
+        "completed_tasks": 31,
         "name": "🛡 Воин", 
         "description": "Твой вызов: сделать дисциплину своей второй натурой.",
         "privileges": [
@@ -89,7 +98,7 @@ RANKS = {
         ]
     },
     "geroi": {
-        "completed_tasks": 101,  # 101-299 выполненных заданий
+        "completed_tasks": 101,
         "name": "⚔️ Герой",
         "description": "Твой вызов: стать олицетворением силы воли для других.",
         "privileges": [
@@ -97,7 +106,7 @@ RANKS = {
         ]
     },
     "spartan": {
-        "completed_tasks": 300,  # 300+ выполненных заданий
+        "completed_tasks": 300,
         "name": "👑 Спартанец",
         "description": "Твой вызов: войти в историю.",
         "privileges": [
@@ -106,7 +115,7 @@ RANKS = {
     }
 }
 
-# Ссылки для привилегий (хранятся отдельно)
+# Ссылки для привилегий
 PRIVILEGE_LINKS = {
     "putnik": {
         "Бесплатный канал 300 ПИНКОВ": "https://t.me/pinkov300"
@@ -122,37 +131,31 @@ PRIVILEGE_LINKS = {
     }
 }
 
-# Тип инвайт-кода для спринта
+# Типы инвайт-кодов
 INVITE_CODE_TYPES = {
-    # Существующие типы
+    # Обычные подписки
     "month": {"name": "Месячная подписка", "days": 30},
-    "year": {"name": "Годовая подписка", "days": 365},
-    "pair_year": {"name": "Парная годовая", "days": 365},
-    "gift_month": {"name": "🎁 Подарочная подписка на 1 месяц", "days": 30, "price": 300},
-    "gift_year": {"name": "🎁 Подарочная подписка на 1 год", "days": 365, "price": 3000},
-    "gift_subscription": {"name": "🎁 Подарочная подписка", "days": 30, "price": 0},
+    "forever": {"name": "Пожизненная подписка", "days": 36500},
     
-    # Новые типы для сертификатов
+    # Подарочные подписки (покупка для друга)
+    "gift_month": {"name": "🎁 Подарочная месячная подписка", "days": 30, "price": 300},
+    "gift_forever": {"name": "🎁 Подарочная пожизненная подписка", "days": 36500, "price": 1990},
+    
+    # Сертификаты (админские, бесплатные)
     "certificate_month": {
         "name": "📅 Месячный сертификат",
         "days": 30,
         "price": 0
     },
-    "certificate_year": {
-        "name": "📆 Годовой сертификат", 
-        "days": 365,
+    "certificate_forever": {
+        "name": "♾️ Пожизненный сертификат", 
+        "days": 36500,
         "price": 0
     },
-    
-    # Для создания через функцию
-    "certificate": {
-        "name": "Сертификат",
-        "days": 30,
-        "price": 0
-    }
 }
+
 # Время отправки заданий
-TASK_TIME_HOUR = 14
+TASK_TIME_HOUR = 9
 TASK_TIME_MINUTE = 0
 REMINDER_TIME_HOUR = 18
 REMINDER_TIME_MINUTE = 30
@@ -161,4 +164,14 @@ REMINDER_TIME_MINUTE = 30
 PINK_FRIEND_LIMITS = {
     "free": {"links": 3, "daily_sends": 3},
     "premium": {"links": 10, "daily_sends": 30}
+}
+
+# Настройки массовой рассылки
+MASS_NOTIFICATION_TYPES = {
+    'all': 'Всем пользователям',
+    'active': 'Активным пользователям',
+    'inactive': 'Неактивным пользователям',
+    'subscribed': 'С активной подпиской',
+    'trial': 'В пробном периоде',
+    'no_subscription': 'Без подписки'
 }
