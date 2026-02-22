@@ -9445,6 +9445,18 @@ async def debug_ref_command(message: Message):
 
 # ========== скидка на праздник (тариф) 23 февраля 8 марта ==========
 
+# ========== КОМАНДЫ ДЛЯ АДМИНА ==========
+
+from aiogram.exceptions import (
+    TelegramBadRequest,
+    TelegramForbiddenError,
+    TelegramNotFound,
+    TelegramRetryAfter,
+    TelegramAPIError
+)
+# или просто импортируйте все
+from aiogram import exceptions
+
 # ========== ФУНКЦИИ ДЛЯ РАССЫЛОК ==========
 
 async def send_feb23_promo_day1():
@@ -9467,6 +9479,8 @@ async def send_feb23_promo_day1():
     
     sent_count = 0
     error_count = 0
+    blocked_count = 0
+    not_found_count = 0
     
     for user_id_str, user_data in users.items():
         try:
@@ -9489,17 +9503,30 @@ async def send_feb23_promo_day1():
             
             await asyncio.sleep(0.05)
             
-        except exceptions.BotBlocked:
+        except exceptions.TelegramForbiddenError:  # Вместо BotBlocked
+            blocked_count += 1
             error_count += 1
             logger.debug(f"🚫 Пользователь {user_id_str} заблокировал бота")
-        except exceptions.ChatNotFound:
+            
+        except exceptions.TelegramNotFound:  # Вместо ChatNotFound
+            not_found_count += 1
             error_count += 1
             logger.debug(f"❓ Чат с пользователем {user_id_str} не найден")
+            
+        except exceptions.TelegramRetryAfter as e:
+            # Превышение лимитов, нужно подождать
+            logger.warning(f"⏳ Лимит, ждем {e.retry_after} сек")
+            await asyncio.sleep(e.retry_after)
+            
+        except exceptions.TelegramAPIError as e:
+            error_count += 1
+            logger.error(f"❌ Ошибка API пользователю {user_id_str}: {e}")
+            
         except Exception as e:
             error_count += 1
-            logger.error(f"❌ Ошибка отправки пользователю {user_id_str}: {e}")
+            logger.error(f"❌ Неизвестная ошибка пользователю {user_id_str}: {e}")
     
-    logger.info(f"✅ Рассылка (22 фев) завершена. Отправлено: {sent_count}, Ошибок: {error_count}")
+    logger.info(f"✅ Рассылка (22 фев) завершена. Отправлено: {sent_count}, Ошибок: {error_count} (блокировок: {blocked_count}, не найдено: {not_found_count})")
     return sent_count, error_count
 
 
@@ -9524,6 +9551,8 @@ async def send_feb23_promo_day2():
     
     sent_count = 0
     error_count = 0
+    blocked_count = 0
+    not_found_count = 0
     
     for user_id_str, user_data in users.items():
         try:
@@ -9546,15 +9575,27 @@ async def send_feb23_promo_day2():
             
             await asyncio.sleep(0.05)
             
-        except exceptions.BotBlocked:
+        except exceptions.TelegramForbiddenError:
+            blocked_count += 1
             error_count += 1
             logger.debug(f"🚫 Пользователь {user_id_str} заблокировал бота")
-        except exceptions.ChatNotFound:
+            
+        except exceptions.TelegramNotFound:
+            not_found_count += 1
             error_count += 1
             logger.debug(f"❓ Чат с пользователем {user_id_str} не найден")
+            
+        except exceptions.TelegramRetryAfter as e:
+            logger.warning(f"⏳ Лимит, ждем {e.retry_after} сек")
+            await asyncio.sleep(e.retry_after)
+            
+        except exceptions.TelegramAPIError as e:
+            error_count += 1
+            logger.error(f"❌ Ошибка API пользователю {user_id_str}: {e}")
+            
         except Exception as e:
             error_count += 1
-            logger.error(f"❌ Ошибка отправки пользователю {user_id_str}: {e}")
+            logger.error(f"❌ Неизвестная ошибка пользователю {user_id_str}: {e}")
     
     logger.info(f"✅ Рассылка (23 фев) завершена. Отправлено: {sent_count}, Ошибок: {error_count}")
     return sent_count, error_count
@@ -9568,10 +9609,11 @@ async def send_feb23_promo_day3():
     users = await utils.get_all_users()
     
     message_text = (
-        "<b>❗️❗️❗️❗️❗️❗️</b>\n\n"
+        "<b>Спартанцы и Амазонки! 👋</b>\n\n"
         "Спартанец ты или Амазонка – не важно, мы дарим Тебе скидку <b>33%</b> на ПОЖИЗНЕННУЮ ПОДПИСКУ!\n\n"
         "🔥 Обычная цена: <s>3000 руб/год</s>\n"
         "🎁 По акции: <b>1990 руб/навсегда</b>\n\n"
+        "❗️❗️❗️❗️❗️❗️\n\n"
         "<b>СЕГОДНЯ ПОСЛЕДНИЙ ДЕНЬ❗️</b>\n\n"
         "Успей купить безлимит 👇"
     )
@@ -9580,6 +9622,8 @@ async def send_feb23_promo_day3():
     
     sent_count = 0
     error_count = 0
+    blocked_count = 0
+    not_found_count = 0
     
     for user_id_str, user_data in users.items():
         try:
@@ -9602,15 +9646,27 @@ async def send_feb23_promo_day3():
             
             await asyncio.sleep(0.05)
             
-        except exceptions.BotBlocked:
+        except exceptions.TelegramForbiddenError:
+            blocked_count += 1
             error_count += 1
             logger.debug(f"🚫 Пользователь {user_id_str} заблокировал бота")
-        except exceptions.ChatNotFound:
+            
+        except exceptions.TelegramNotFound:
+            not_found_count += 1
             error_count += 1
             logger.debug(f"❓ Чат с пользователем {user_id_str} не найден")
+            
+        except exceptions.TelegramRetryAfter as e:
+            logger.warning(f"⏳ Лимит, ждем {e.retry_after} сек")
+            await asyncio.sleep(e.retry_after)
+            
+        except exceptions.TelegramAPIError as e:
+            error_count += 1
+            logger.error(f"❌ Ошибка API пользователю {user_id_str}: {e}")
+            
         except Exception as e:
             error_count += 1
-            logger.error(f"❌ Ошибка отправки пользователю {user_id_str}: {e}")
+            logger.error(f"❌ Неизвестная ошибка пользователю {user_id_str}: {e}")
     
     logger.info(f"✅ Рассылка (24 фев) завершена. Отправлено: {sent_count}, Ошибок: {error_count}")
     return sent_count, error_count
