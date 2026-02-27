@@ -31,27 +31,26 @@ task_keyboard = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
+# Добавить в keyboards.py
 def get_gift_subscription_keyboard():
-    """Клавиатура для выбора тарифа подарочного сертификата"""
-    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-    
-    keyboard = InlineKeyboardMarkup(
+    """Клавиатура для выбора подарка с ценами из config"""
+    return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(
-                text="📅 Месячная подписка - 300 руб.", 
+                text=f"🎁 1 месяц - {config.TARIFFS['month']['price']} руб.",
                 callback_data="gift_tariff_month"
             )],
             [InlineKeyboardButton(
-                text="♾️ Пожизненная подписка - 1990 руб.", 
-                callback_data="gift_tariff_forever"
+                text=f"🎁 1 год - {config.TARIFFS['year']['price']} руб.",
+                callback_data="gift_tariff_year"
             )],
             [InlineKeyboardButton(
-                text="🔙 Назад к сертификатам", 
-                callback_data="back_to_certificates"
+                text="🔙 Назад",
+                callback_data="back_to_invite_codes"
             )]
         ]
     )
-    return keyboard
+
 def get_gift_confirmation_keyboard(invite_code, payment_id=None):
     """Клавиатура после создания инвайт-кода для подарка"""
     buttons = []
@@ -108,33 +107,31 @@ def get_admin_keyboard():
 admin_keyboard = get_admin_keyboard()
 
 # РАЗДЕЛ ПОДПИСКИ (очищенный)
-# В файле keyboards.py обновите функцию get_payment_keyboard:
-
 def get_payment_keyboard():
-    """Клавиатура для оплаты подписки"""
-    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    """Клавиатура для оплаты подписки - только тарифы"""
+    tariffs = config.TARIFFS
     
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(
-                text="📅 Месячная - 300 руб.", 
-                callback_data="tariff_month"
-            )],
-            [InlineKeyboardButton(
-                text="♾️ Пожизненная - 1990 руб.", 
-                callback_data="tariff_forever"
-            )],
-            [InlineKeyboardButton(
-                text="🎫 Есть инвайт-код", 
-                callback_data="activate_invite"
-            )],
-            [InlineKeyboardButton(
-                text="🔙 Назад", 
-                callback_data="back_to_main"
-            )]
-        ]
-    )
-    return keyboard
+    keyboard = [
+        [InlineKeyboardButton(
+            text=f"📅 Месячная - {tariffs['month']['price']} руб.", 
+            callback_data="tariff_month"
+        )],
+        [InlineKeyboardButton(
+            text=f"🎯 Годовая - {tariffs['year']['price']} руб.", 
+            callback_data="tariff_year"
+        )],
+        [InlineKeyboardButton(
+            text=f"👥 Парная годовая - {tariffs['pair_year']['price']} руб.", 
+            callback_data="tariff_pair_year"
+        )],
+        [InlineKeyboardButton(
+            text="🔙 Главное меню", 
+            callback_data="back_to_main"
+        )]
+    ]
+    
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
 # НОВЫЙ РАЗДЕЛ ИНВАЙТ-КОДОВ
 def get_invite_codes_keyboard():
     """Клавиатура для раздела Сертификаты 🎁"""
@@ -304,4 +301,3 @@ def get_mass_notification_keyboard():
             [InlineKeyboardButton(text="🔙 Назад в админку", callback_data="admin_back")]
         ]
     )
-

@@ -1793,6 +1793,7 @@ async def show_certificates_menu(message: Message):
     from keyboards import get_invite_codes_keyboard
     await message.answer(message_text, reply_markup=get_invite_codes_keyboard())
 # НОВЫЙ обработчик подарка подписки
+# ЗАМЕНИТЬ существующий обработчик gift_subscription_handler на этот:
 @dp.callback_query(F.data == "gift_subscription")
 async def gift_subscription_handler(callback: CallbackQuery):
     """Подарок подписки другу - исправленная версия"""
@@ -1814,20 +1815,20 @@ async def gift_subscription_handler(callback: CallbackQuery):
     try:
         message_text = (
             "🎁 <b>ПОДАРОЧНЫЙ СЕРТИФИКАТ СПАРТАНЦА</b>\n\n"
-            "💝 <b>Хотите сделать незабываемый подарок?</b>\n\n"
-            "🎫 <b>Что вы получите:</b>\n"
-            "1. Выбираете тариф подписки\n"
-            "2. Оплачиваете через ЮKassa\n"
-            "3. Получаете инвайт-код и красивый сертификат спартанца\n"
-            "4. Сертификат можно распечатать для физического подарка\n"
-            "5. Друг активирует подписку по QR-коду\n\n"
-            "👥 <b>Преимущества сертификата:</b>\n"
-            "• Подарочный код действует 30 дней\n"
-            "• Красивый дизайн в стиле спартанца\n"
-            "Выберите тариф для сертификата:"
-        )
+    "💝 <b>Хотите сделать незабываемый подарок?</b>\n\n"
+    "🎫 <b>Что вы получите:</b>\n"
+    "1. Выбираете тариф подписки\n"
+    "2. Оплачиваете через ЮKassa\n"
+    "3. Получаете инвайт-код и красивый сертификат спартанца\n"
+    "4. Сертификат можно распечатать для физического подарка\n"
+    "5. Друг активирует подписку по QR-коду\n\n"
+    "👥 <b>Преимущества сертификата:</b>\n"
+    "• Подарочный код действует 30 дней\n"
+    "• Красивый дизайн в стиле спартанца\n"
+    "Выберите тариф для сертификата:"
+)
         
-        # Используем обновленную клавиатуру для подарков
+        # Используем НОВУЮ клавиатуру для подарков
         from keyboards import get_gift_subscription_keyboard
         await callback.message.edit_text(
             message_text, 
@@ -1845,6 +1846,7 @@ async def gift_subscription_handler(callback: CallbackQuery):
             await callback.answer()
         except:
             pass
+
 # Добавить в bot.py после обработчика gift_subscription_handler
 @dp.callback_query(F.data.startswith("gift_tariff_"))
 async def process_gift_tariff_selection(callback: CallbackQuery):
@@ -1894,14 +1896,6 @@ async def process_gift_tariff_selection(callback: CallbackQuery):
             pass
         return
     
-    # Проверяем, что tariff_id корректен
-    if tariff_id not in ["month", "forever"]:
-        try:
-            await callback.answer(f"❌ Неизвестный тариф: {tariff_id}")
-        except:
-            pass
-        return
-    
     # Используем цены из config.TARIFFS
     base_tariff = config.TARIFFS.get(tariff_id)
     if not base_tariff:
@@ -1913,9 +1907,9 @@ async def process_gift_tariff_selection(callback: CallbackQuery):
     
     # Создаем конфигурацию для подарка на основе основного тарифа
     gift_tariff = {
-        "name": f"🎁 Подарочная {base_tariff['name'].lower()}",
-        "price": base_tariff['price'],
-        "days": base_tariff['days'],
+        "name": f"🎁 Подарочная подписка {base_tariff['name'].lower()}",
+        "price": base_tariff['price'],  # ← БЕРЕМ ЦЕНУ ИЗ CONFIG
+        "days": base_tariff['days'],    # ← БЕРЕМ ДНИ ИЗ CONFIG
         "type": f"gift_{tariff_id}"
     }
     
@@ -1925,7 +1919,7 @@ async def process_gift_tariff_selection(callback: CallbackQuery):
         description = f"{gift_tariff['name']} для пользователя {user.first_name or user.id}"
         
         payment_data = await payments.create_yookassa_payment(
-            amount=gift_tariff['price'],
+            amount=gift_tariff['price'],  # Используем цену из конфига
             description=description,
             user_id=user_id,
             tariff_id=f"gift_{tariff_id}"  # Добавляем префикс gift
@@ -1939,41 +1933,25 @@ async def process_gift_tariff_selection(callback: CallbackQuery):
             return
         
         # Формируем сообщение об оплате подарка
-        if tariff_id == "forever":
-            message_text = (
-                f"🎁 <b>ОПЛАТА ПОДАРОЧНОГО СЕРТИФИКАТА</b>\n\n"
-                f"📦 <b>Тариф:</b> {gift_tariff['name']}\n"
-                f"💰 <b>Сумма:</b> {gift_tariff['price']} руб.\n"
-                f"♾️ <b>Срок:</b> НАВСЕГДА!\n\n"
-                f"🎫 <b>После успешной оплаты:</b>\n"
-                f"• Вы получите инвайт-код и красивый сертификат\n"
-                f"• Сертификат можно распечатать для физического подарка\n"
-                f"• QR-код для быстрой активации\n"
-                f"• Пожизненный доступ к челленджу для друга\n\n"
-            )
-        else:
-            message_text = (
-                f"🎁 <b>ОПЛАТА ПОДАРОЧНОГО СЕРТИФИКАТА</b>\n\n"
-                f"📦 <b>Тариф:</b> {gift_tariff['name']}\n"
-                f"💰 <b>Сумма:</b> {gift_tariff['price']} руб.\n"
-                f"⏰ <b>Срок:</b> {gift_tariff['days']} дней\n\n"
-                f"🎫 <b>После успешной оплаты:</b>\n"
-                f"• Вы получите инвайт-код и красивый сертификат\n"
-                f"• Сертификат можно распечатать для физического подарка\n"
-                f"• QR-код для быстрой активации\n"
-                f"• Можно подарить любому человеку\n\n"
-            )
-        
-        message_text += (
-            f"🔗 <b>Ссылка для оплаты:</b>\n"
-            f"<a href='{payment_data['confirmation_url']}'>Нажмите для перехода к оплате</a>\n\n"
-            f"📱 <b>После оплаты:</b>\n"
-            f"1. Вернитесь в бота\n"
-            f"2. Нажмите кнопку «✅ Проверить оплату» ниже\n"
-            f"3. Получите сертификат с QR-кодом для подарка\n\n"
-            f"⏳ <b>Платеж действителен 30 минут</b>\n"
-            f"💡 <b>ID платежа:</b> <code>{payment_data['payment_id'][:8]}...</code>"
-        )
+        message_text = (
+            f"🎁 <b>ОПЛАТА ПОДАРОЧНОГО СЕРТИФИКАТА</b>\n\n"  # ОБНОВЛЕНО
+    f"📦 <b>Тариф:</b> {gift_tariff['name']}\n"
+    f"💰 <b>Сумма:</b> {gift_tariff['price']} руб.\n"
+    f"⏰ <b>Срок:</b> {gift_tariff['days']} дней\n\n"
+    f"🎫 <b>После успешной оплаты:</b>\n"
+    f"• Вы получите инвайт-код и красивый сертификат\n"
+    f"• Сертификат можно распечатать для физического подарка\n"
+    f"• QR-код для быстрой активации\n"
+    f"• Можно подарить любому человеку\n\n"
+    f"🔗 <b>Ссылка для оплаты:</b>\n"
+    f"<a href='{payment_data['confirmation_url']}'>Нажмите для перехода к оплате</a>\n\n"
+    f"📱 <b>После оплаты:</b>\n"
+    f"1. Вернитесь в бота\n"
+    f"2. Нажмите кнопку «✅ Проверить оплату» ниже\n"
+    f"3. Получите сертификат с QR-кодом для подарка\n\n"
+    f"⏳ <b>Платеж действителен 30 минут</b>\n"
+    f"💡 <b>ID платежа:</b> <code>{payment_data['payment_id'][:8]}...</code>"
+)
         
         # Клавиатура с кнопками
         keyboard = InlineKeyboardMarkup(
@@ -2149,39 +2127,28 @@ async def activate_gift_subscription(payment_data, callback):
     
     if base_tariff:
         tariff = {
-            "name": f"🎁 Подарочная {base_tariff['name'].lower()}",
+            "name": f"🎁 Подарочная подписка {base_tariff['name'].lower()}",
             "days": base_tariff['days'],
             "price": base_tariff['price']
         }
-        # Определяем тип подписки
-        subscription_type = 'forever' if base_tariff_id == 'forever' else 'month'
     else:
-        # По умолчанию месячная
         tariff = {
             "name": "🎁 Подарочная подписка",
             "days": 30,
             "price": payment_data.get('amount', 0)
         }
-        subscription_type = 'month'
     
     try:
         # ОБНОВЛЯЕМ статус платежа
         await payments.update_payment_status(payment_data['payment_id'], 'succeeded')
         
-        # Определяем тип кода для подарка
-        code_type = f"gift_{subscription_type}"
-        
         # Создаем инвайт-код для подарка
         invite_code = await utils.create_invite_code(
-            code_type=code_type,
+            code_type="gift_subscription",
             days=tariff['days'],
             max_uses=1,
             created_by=user_id,
-            is_gift=True,
-            extra_data={
-                "subscription_type": subscription_type,
-                "is_forever": subscription_type == 'forever'
-            }
+            is_gift=True
         )
         
         if not invite_code:
@@ -2201,9 +2168,13 @@ async def activate_gift_subscription(payment_data, callback):
                 generator_available = False
             
             if generator_available:
-                # Получаем данные покупателя
-                buyer_name = callback.from_user.first_name if callback.from_user else "Покупатель"
-                buyer_username = callback.from_user.username if callback.from_user else None
+                # Получаем данные покупателя БЕЗОПАСНО
+                buyer_name = "Покупатель"
+                buyer_username = None
+                
+                if hasattr(callback, 'from_user') and callback.from_user:
+                    buyer_name = callback.from_user.first_name or "Покупатель"
+                    buyer_username = callback.from_user.username
                 
                 buyer_data = {
                     'first_name': buyer_name,
@@ -2227,32 +2198,18 @@ async def activate_gift_subscription(payment_data, callback):
                     # Отправляем единое сообщение с кодом и сертификатом
                     certificate_file = FSInputFile(filepath)
                     
-                    if subscription_type == 'forever':
-                        combined_message = (
-                            f"🎉 <b>ПОДАРОК ОПЛАЧЕН!</b>\n\n"
-                            f"💝 <b>Поздравляем с покупкой пожизненного сертификата!</b>\n\n"
-                            f"🎫 <b>Инвайт-код для подарка:</b>\n"
-                            f"<code>{invite_code}</code>\n\n"
-                            f"♾️ <b>Тип подписки:</b> ПОЖИЗНЕННАЯ\n"
-                            f"📄 Подарочный сертификат прикреплён к сообщению.\n"
-                            f"Его можно распечатать и подарить физически.\n\n"
-                        )
-                    else:
-                        combined_message = (
-                            f"🎉 <b>ПОДАРОК ОПЛАЧЕН!</b>\n\n"
-                            f"💝 <b>Поздравляем с покупкой!</b>\n\n"
-                            f"🎫 <b>Инвайт-код для подарка:</b>\n"
-                            f"<code>{invite_code}</code>\n\n"
-                            f"📄 Подарочный сертификат прикреплён к сообщению.\n"
-                            f"Его можно распечатать и подарить физически.\n\n"
-                        )
-                    
-                    combined_message += (
+                    combined_message = (
+                        f"🎉 <b>ПОДАРОК ОПЛАЧЕН!</b>\n\n"
+                        f"💝 <b>Поздравляем с покупкой!</b>\n\n"
+                        f"🎫 <b>Инвайт-код для подарка:</b>\n"
+                        f"<code>{invite_code}</code>\n\n"
+                        f"📄 Подарочный сертификат прикреплён к сообщению.\n"
+                        f"Его можно распечатать и подарить физически.\n\n"
                         f"📝 <b>Как подарить:</b>\n"
                         f"1. Отправьте код или сертификат другу\n"
                         f"2. Он переходит в бота @{config.BOT_USERNAME}\n"
                         f"3. Нажимает START для регистрации\n"
-                        f"4. Выбирает «Сертификаты 🎁» → «🎫 Активировать инвайт-код»\n"
+                        f"4. Выбирает «Сертификаты 🎁» → «🎫 Активировать инвайт-код»\n"  # ОБНОВЛЕНО
                         f"5. Вводит код \n\n"
                         f"⚠️ <b>Важно:</b>\n"
                         f"• Код можно использовать только 1 раз\n"
@@ -2287,28 +2244,16 @@ async def activate_gift_subscription(payment_data, callback):
         
         # Если генератор сертификатов недоступен, отправляем только код
         if not generator_available:
-            if subscription_type == 'forever':
-                fallback_message = (
-                    f"🎉 <b>ПОДАРОК ОПЛАЧЕН!</b>\n\n"
-                    f"💝 <b>Поздравляем с покупкой пожизненного сертификата!</b>\n\n"
-                    f"🎫 <b>Инвайт-код для подарка:</b>\n"
-                    f"<code>{invite_code}</code>\n\n"
-                    f"♾️ <b>Тип подписки:</b> ПОЖИЗНЕННАЯ\n\n"
-                )
-            else:
-                fallback_message = (
-                    f"🎉 <b>ПОДАРОК ОПЛАЧЕН!</b>\n\n"
-                    f"💝 <b>Поздравляем с покупкой!</b>\n\n"
-                    f"🎫 <b>Инвайт-код для подарка:</b>\n"
-                    f"<code>{invite_code}</code>\n\n"
-                )
-            
-            fallback_message += (
+            fallback_message = (
+                f"🎉 <b>ПОДАРОК ОПЛАЧЕН!</b>\n\n"
+                f"💝 <b>Поздравляем с покупкой!</b>\n\n"
+                f"🎫 <b>Инвайт-код для подарка:</b>\n"
+                f"<code>{invite_code}</code>\n\n"
                 f"📝 <b>Как подарить:</b>\n"
                 f"1. Отправьте этот код другу\n"
                 f"2. Он должен перейти в бота @{config.BOT_USERNAME}\n"
                 f"3. Нажать START для регистрации\n"
-                f"4. Затем выбрать «Сертификаты 🎁» → «🎫 Активировать инвайт-код»\n"
+                f"4. Затем выбрать «Сертификаты 🎁» → «🎫 Активировать инвайт-код»\n"  # ОБНОВЛЕНО
                 f"5. Ввести код и активировать подписку\n\n"
                 f"⚠️ <b>Внимание:</b>\n"
                 f"• Код можно использовать только 1 раз!\n"
@@ -2328,8 +2273,12 @@ async def activate_gift_subscription(payment_data, callback):
         
         # УВЕДОМЛЯЕМ админа о подарке
         try:
-            buyer_name = callback.from_user.first_name if callback.from_user else "Покупатель"
-            buyer_username = f"@{callback.from_user.username}" if callback.from_user and callback.from_user.username else "нет"
+            buyer_name = "Покупатель"
+            buyer_username = "нет"
+            
+            if hasattr(callback, 'from_user') and callback.from_user:
+                buyer_name = callback.from_user.first_name or "Покупатель"
+                buyer_username = f"@{callback.from_user.username}" if callback.from_user.username else "нет"
             
             admin_message = (
                 f"🎁 <b>НОВЫЙ ПОДАРОК</b>\n\n"
@@ -2337,7 +2286,6 @@ async def activate_gift_subscription(payment_data, callback):
                 f"🆔 {user_id}\n"
                 f"💎 {tariff['name']}\n"
                 f"💰 {tariff['price']} руб.\n"
-                f"{'♾️ Тип: Пожизненный' if subscription_type == 'forever' else '📅 Тип: Месячный'}\n"
                 f"🎫 Код: {invite_code}"
             )
             await bot.send_message(config.ADMIN_ID, admin_message, parse_mode="HTML")
@@ -2627,17 +2575,12 @@ async def show_subscription(message: Message):
         is_trial = days_passed < 3  # БЕСПЛАТНЫЕ 3 дня!
         
         if await is_subscription_active(user_data):
-            # Проверяем, пожизненная ли подписка
-            if user_data.get('subscription_type') == 'forever':
-                message_text += "♾️ <b>Статус:</b> ПОЖИЗНЕННАЯ ПОДПИСКА\n"
-                message_text += "✅ Доступ навсегда\n\n"
-            else:
-                try:
-                    sub_end = datetime.fromisoformat(user_data['subscription_end'])
-                    days_left = (sub_end - datetime.now()).days
-                    message_text += f"✅ <b>Статус:</b> Активна ({days_left} дней осталось)\n"
-                except:
-                    message_text += "✅ <b>Статус:</b> Активна\n"
+            try:
+                sub_end = datetime.fromisoformat(user_data['subscription_end'])
+                days_left = (sub_end - datetime.now()).days
+                message_text += f"✅ <b>Статус:</b> Активна ({days_left} дней осталось)\n"
+            except:
+                message_text += "✅ <b>Статус:</b> Активна\n"
         elif is_trial:
             message_text += "🎁 <b>Статус:</b> БЕСПЛАТНЫЙ пробный период\n"
             message_text += f"Осталось бесплатных дней: {3 - days_passed}\n\n"
@@ -2647,16 +2590,16 @@ async def show_subscription(message: Message):
         
         message_text += "<b>Доступные тарифы:</b>\n"
         
-        # ПОКАЗЫВАЕМ ТОЛЬКО ПЛАТНЫЕ ТАРИФЫ
+        # ПОКАЗЫВАЕМ ТОЛЬКО ПЛАТНЫЕ ТАРИФЫ (без trial_ruble)
         for tariff_id, tariff in config.TARIFFS.items():
-            if tariff_id == 'month':
-                message_text += f"• {tariff['name']} - {tariff['price']} руб. (30 дней)\n"
-            elif tariff_id == 'forever':
-                message_text += f"• {tariff['name']} - {tariff['price']} руб. (навсегда)\n"
+            if tariff_id in ['month', 'year', 'pair_year']:  # ТОЛЬКО платные тарифы
+                message_text += f"• {tariff['name']} - {tariff['price']} руб.\n"
         
         await message.answer(message_text, reply_markup=keyboards.get_payment_keyboard())
         
     except Exception as e:
+        logger.error(f"❌ Ошибка в show_subscription: {e}")
+        await message.answer("❌ Произошла ошибка при загрузке информации о подписке")
         logger.error(f"❌ Ошибка в show_subscription: {e}")
         await message.answer("❌ Произошла ошибка при загрузке информации о подписке")
 @dp.message(F.text == "⏭️ ПРОПУСТИТЬ")
@@ -2722,7 +2665,7 @@ async def skip_task(message: Message):
 # НАЙДИТЕ ЭТОТ ОБРАБОТЧИК И ОБНОВИТЕ ЕГО:
 @dp.callback_query(F.data == "activate_subscription_after_trial")
 async def activate_subscription_after_trial_handler(callback: CallbackQuery):
-    """Активация подписки после окончания пробного периода"""
+    """Активация подписки после окончания пробного периода - ОБНОВЛЕННЫЙ"""
     if not callback or not callback.message:
         return
         
@@ -2755,8 +2698,6 @@ async def activate_subscription_after_trial_handler(callback: CallbackQuery):
         message_text = (
             "💎 <b>АКТИВАЦИЯ ПОДПИСКИ</b>\n\n"
             "Пробный период завершен. Выберите тариф для продолжения:\n\n"
-            "📅 <b>Месячная подписка</b> - 300 руб.\n"
-            "♾️ <b>Пожизненная подписка</b> - 1990 руб. (навсегда!)\n\n"
             "<b>После оплаты задание придет сразу же!</b> ⚡"
         )
     
@@ -2770,6 +2711,7 @@ async def activate_subscription_after_trial_handler(callback: CallbackQuery):
             logger.error(f"Ошибка при отправке сообщения: {e2}")
     
     await callback.answer()
+    
 # НОВЫЙ обработчик "Инвайт-коды 💌"
 @dp.callback_query(F.data == "back_to_certificates")
 async def back_to_certificates_handler(callback: CallbackQuery):
@@ -2984,11 +2926,9 @@ async def get_referral_link(callback: CallbackQuery):
     await callback.answer()
 
 
-# Обновите функцию process_tariff_selection в bot.py:
-
 @dp.callback_query(F.data.startswith("tariff_"))
 async def process_tariff_selection(callback: CallbackQuery):
-    """Обработка выбора тарифа"""
+    """Обработка выбора тарифа с улучшенной обработкой ошибок"""
     if not callback.data:
         await callback.answer("❌ Ошибка: данные не найдены")
         return
@@ -3022,22 +2962,21 @@ async def process_tariff_selection(callback: CallbackQuery):
             return
         
         # Формируем сообщение об оплате
-        if tariff_id == "forever":
-            message_text = (
-                f"<b>♾️ ОПЛАТА ПОЖИЗНЕННОЙ ПОДПИСКИ</b>\n\n"
-                f"📦 <b>Тариф:</b> {tariff['name']}\n"
-                f"💰 <b>Сумма:</b> {tariff['price']} руб.\n"
-                f"⏰ <b>Срок:</b> НАВСЕГДА!\n\n"
-                f"🎁 <b>Преимущества:</b>\n"
-                f"• Доступ ко всем заданиям навсегда\n"
-                f"• Возможность проходить челлендж в удобном темпе\n\n"
-            )
-        else:
-            message_text = (
-                f"<b>💎 ОПЛАТА ПОДПИСКИ</b>\n\n"
-                f"📦 <b>Тариф:</b> {tariff['name']}\n"
-                f"💰 <b>Сумма:</b> {tariff['price']} руб.\n"
-                f"⏰ <b>Срок:</b> {tariff['days']} дней\n\n"
+        message_text = (
+            f"<b>💎 ОПЛАТА ПОДПИСКИ</b>\n\n"
+            f"📦 <b>Тариф:</b> {tariff['name']}\n"
+            f"💰 <b>Сумма:</b> {tariff['price']} руб.\n"
+            f"⏰ <b>Срок:</b> {tariff['days']} дней\n\n"
+        )
+        
+        # Для парных тарифов добавляем пояснение
+        if tariff_id == "pair_year":
+            message_text += (
+                "👥 <b>Это парная подписка на двух человек!</b>\n\n"
+                "После успешной оплаты:\n"
+                "• Ваша подписка активируется автоматически\n"
+                "• Вы получите инвайт-код для второго участника\n"
+                "• Передайте код другу для активации\n\n"
             )
         
         message_text += (
@@ -3085,7 +3024,6 @@ async def process_tariff_selection(callback: CallbackQuery):
     except Exception as e:
         logger.error(f"❌ Ошибка создания платежа: {e}")
         await callback.answer("❌ Ошибка при создании платежа")
-
 @dp.callback_query(F.data.startswith("check_payment_"))
 async def check_payment_handler(callback: CallbackQuery):
     """Проверка статуса оплаты с безопасной обработкой"""
@@ -3255,7 +3193,7 @@ async def back_to_tariffs_handler(callback: CallbackQuery):
         await callback.answer("❌ Ошибка")
 
 async def activate_subscription_after_payment(payment_data, callback):
-    """Активация подписки после успешной оплаты с реферальным начислением"""
+    """Активация подписки после успешной оплаты с реферальным начислением и немедленной отправкой задания"""
     if not callback:
         return
         
@@ -3272,36 +3210,33 @@ async def activate_subscription_after_payment(payment_data, callback):
         await callback.answer("❌ Ошибка: пользователь не найден")
         return
     
-    # Обновляем статус платежа
+    # ОБНОВЛЯЕМ статус платежа
     await payments.update_payment_status(payment_data['payment_id'], 'succeeded')
     
-    # ОСОБАЯ ЛОГИКА ДЛЯ ПОЖИЗНЕННОЙ ПОДПИСКИ
-    if tariff_id == "forever":
-        # Добавляем 100 лет (фактически навсегда)
-        updated_user_data = await utils.add_subscription_days(user_data, 36500)
-        # Помечаем как пожизненную
-        updated_user_data['subscription_type'] = 'forever'
-        subscription_message = "Пожизненная подписка активирована навсегда!"
-    else:
-        # Обычная месячная подписка
-        updated_user_data = await utils.add_subscription_days(user_data, tariff['days'])
-        subscription_message = f"Подписка активирована на {tariff['days']} дней!"
+    if tariff_id == "pair_year":
+        await activate_pair_subscription(user_data, user_id, tariff, callback)
+        return  # Для парной подписки своя логика
     
-    # Начисляем реферальный бонус
+    # ДОБАВЛЯЕМ ДНИ ПОДПИСКИ
+    updated_user_data = await utils.add_subscription_days(user_data, tariff['days'])
+    
+    # НАЧИСЛЯЕМ РЕФЕРАЛЬНЫЙ БОНУС
     referral_result = await utils.process_referral_payment(
         user_id, 
         tariff['price'], 
         tariff_id
     )
     
-    # Обработка реферального результата
+    # ПРАВИЛЬНО ОБРАБАТЫВАЕМ РЕЗУЛЬТАТ
     if referral_result and len(referral_result) == 4:
         success, referrer_id, bonus_amount, percent = referral_result
         
         if success and referrer_id and bonus_amount > 0:
+            # Получаем новый баланс реферера
             referrer_data = await utils.get_user(referrer_id)
             new_balance = referrer_data.get('referral_earnings', 0) if referrer_data else 0
             
+            # Отправляем уведомление рефереру
             await ReferralNotifications.send_referral_bonus_notification(
                 bot=bot,
                 referrer_id=referrer_id,
@@ -3313,38 +3248,50 @@ async def activate_subscription_after_payment(payment_data, callback):
                     'new_balance': new_balance
                 }
             )
+    else:
+        # Если что-то пошло не так
+        success = False
+        referrer_id = None
+        bonus_amount = 0
+        percent = 0
     
     await utils.save_user(user_id, updated_user_data)
     
     success_message = (
         f"✅ <b>Подписка активирована!</b>\n\n"
         f"💎 Тариф: {tariff['name']}\n"
-        f"{'⏰ Срок: ' + tariff['description'] if tariff_id != 'forever' else '♾️ Срок: навсегда'}\n"
+        f"⏰ Срок: {tariff['days']} дней\n"
         f"💰 Стоимость: {tariff['price']} руб.\n"
-        f"🎯 {subscription_message}\n\n"
+        f"🎯 Теперь у вас есть доступ ко всем заданиям!\n\n"
     )
     
     if success and bonus_amount > 0:
         success_message += f"🎉 <b>Вы принесли доход своему рефереру: {bonus_amount} руб.!</b>\n\n"
     
     success_message += f"Задания будут приходить ежедневно в 9:00 🕘\n\n"
+    
+    # 🔥 ВАЖНОЕ ДОБАВЛЕНИЕ: НЕМЕДЛЕННАЯ ОТПРАВКА ТЕКУЩЕГО ЗАДАНИЯ
     success_message += "<b>Твое следующее задание придет прямо сейчас! ⬇️</b>"
     
     success_edit = await safe_edit_message(callback, success_message)
     if not success_edit:
-        await safe_send_message(user_id, success_message)
+        await safe_send_message(callback, success_message)
     
-    # Отправляем задание немедленно
+    # 🔥 КРИТИЧЕСКО ВАЖНО: ОТПРАВЛЯЕМ ЗАДАНИЕ НЕМЕДЛЕННО
     try:
+        # Получаем следующий день (текущий день + 1)
         current_day = updated_user_data.get('current_day', 0)
         next_day = current_day + 1
         
+        # Если пользователь только начал (день 0), ставим день 1
         if next_day == 0:
             next_day = 1
             
+        # Получаем задание для следующего дня
         task_id, task = await utils.get_task_by_day(next_day, updated_user_data.get('archetype', 'spartan'))
         
         if task:
+            # Форматируем сообщение с заданием
             task_message = (
                 f"📋 <b>Новое задание!</b>\n\n"
                 f"<b>День {next_day}/300</b>\n\n"
@@ -3353,6 +3300,7 @@ async def activate_subscription_after_payment(payment_data, callback):
                 f"<i>Отмечай выполнение кнопками ниже 👇</i>"
             )
             
+            # Отправляем задание
             await bot.send_message(
                 chat_id=user_id,
                 text=task_message,
@@ -3360,15 +3308,19 @@ async def activate_subscription_after_payment(payment_data, callback):
                 disable_web_page_preview=True
             )
             
+            # Обновляем данные пользователя
             updated_user_data['last_task_sent'] = datetime.now().isoformat()
             updated_user_data['task_completed_today'] = False
             await utils.save_user(user_id, updated_user_data)
             
             logger.info(f"✅ Задание дня {next_day} отправлено пользователю {user_id} после активации подписки")
+        else:
+            logger.warning(f"⚠️ Не найдено задание дня {next_day} для пользователя {user_id}")
+            
     except Exception as e:
         logger.error(f"❌ Ошибка отправки задания после активации подписки пользователю {user_id}: {e}")
     
-    # Уведомление админа
+    # УВЕДОМЛЯЕМ админа об успешной активации
     try:
         user = callback.from_user
         if user:
@@ -3378,7 +3330,7 @@ async def activate_subscription_after_payment(payment_data, callback):
                 f"🆔 ID: {user_id}\n"
                 f"💎 Тариф: {tariff['name']}\n"
                 f"💰 Сумма: {tariff['price']} руб.\n"
-                f"{'♾️ Тип: Пожизненная' if tariff_id == 'forever' else f'📅 Дней: {tariff['days']}'}\n"
+                f"📅 Дней: {tariff['days']}\n"
                 f"⏰ Дата окончания: {updated_user_data.get('subscription_end', 'неизвестно')}\n\n"
             )
             
@@ -9442,339 +9394,6 @@ async def debug_ref_command(message: Message):
                 debug_text += f"{i}. {name} (ID: {ref_id}) - подписка: {'✅' if sub_active else '❌'}\n"
     
     await message.answer(debug_text)
-
-# ========== скидка на праздник (тариф) 23 февраля 8 марта ==========
-
-# ========== КОМАНДЫ ДЛЯ АДМИНА ==========
-
-from aiogram.exceptions import (
-    TelegramBadRequest,
-    TelegramForbiddenError,
-    TelegramNotFound,
-    TelegramRetryAfter,
-    TelegramAPIError
-)
-# или просто импортируйте все
-from aiogram import exceptions
-
-# ========== ФУНКЦИИ ДЛЯ РАССЫЛОК ==========
-
-async def send_feb23_promo_day1():
-    """Отправка промо-сообщения на 22 февраля"""
-    
-    logger.info("🚀 Начинаю рассылку промо (22 февраля)...")
-    
-    users = await utils.get_all_users()
-    
-    message_text = (
-        "<b>Спартанцы и Амазонки! 👋</b>\n\n"
-        "В честь праздника дарим скидку 23 проце... НЕТ! <b>33 процента</b> на ПОЖИЗНЕННУЮ ПОДПИСКУ!\n\n"
-        "🔥 Обычная цена: <s>3000 руб/год</s>\n"
-        "🎁 По акции: <b>1990 руб/навсегда</b>\n\n"
-        "⏳ Акция действует ТОЛЬКО 22, 23 и 24 февраля!\n\n"
-        "Жми кнопку ниже, чтобы узнать подробности 👇"
-    )
-    
-    keyboard = get_feb23_simple_keyboard()
-    
-    sent_count = 0
-    error_count = 0
-    blocked_count = 0
-    not_found_count = 0
-    
-    for user_id_str, user_data in users.items():
-        try:
-            user_id = int(user_id_str)
-            
-            if not user_data or not isinstance(user_data, dict):
-                continue
-            
-            await bot.send_message(
-                chat_id=user_id,
-                text=message_text,
-                reply_markup=keyboard,
-                parse_mode='HTML'
-            )
-            
-            sent_count += 1
-            
-            if sent_count % 10 == 0:
-                logger.info(f"📨 Отправлено {sent_count} сообщений...")
-            
-            await asyncio.sleep(0.05)
-            
-        except exceptions.TelegramForbiddenError:  # Вместо BotBlocked
-            blocked_count += 1
-            error_count += 1
-            logger.debug(f"🚫 Пользователь {user_id_str} заблокировал бота")
-            
-        except exceptions.TelegramNotFound:  # Вместо ChatNotFound
-            not_found_count += 1
-            error_count += 1
-            logger.debug(f"❓ Чат с пользователем {user_id_str} не найден")
-            
-        except exceptions.TelegramRetryAfter as e:
-            # Превышение лимитов, нужно подождать
-            logger.warning(f"⏳ Лимит, ждем {e.retry_after} сек")
-            await asyncio.sleep(e.retry_after)
-            
-        except exceptions.TelegramAPIError as e:
-            error_count += 1
-            logger.error(f"❌ Ошибка API пользователю {user_id_str}: {e}")
-            
-        except Exception as e:
-            error_count += 1
-            logger.error(f"❌ Неизвестная ошибка пользователю {user_id_str}: {e}")
-    
-    logger.info(f"✅ Рассылка (22 фев) завершена. Отправлено: {sent_count}, Ошибок: {error_count} (блокировок: {blocked_count}, не найдено: {not_found_count})")
-    return sent_count, error_count
-
-
-async def send_feb23_promo_day2():
-    """Отправка промо-сообщения на 23 февраля"""
-    
-    logger.info("🚀 Начинаю рассылку промо (23 февраля)...")
-    
-    users = await utils.get_all_users()
-    
-    message_text = (
-        "🎖️ <b>С 23 ФЕВРАЛЯ, ЗАЩИТНИКИ!</b>\n\n"
-        "<b>Спартанцы и Амазонки! 👋</b>\n\n"
-        "В честь праздника дарим скидку <b>33%</b> на ПОЖИЗНЕННУЮ ПОДПИСКУ!\n\n"
-        "🔥 Обычная цена: <s>3000 руб/год</s>\n"
-        "🎁 По акции: <b>1990 руб/навсегда</b>\n\n"
-        "СРОК ДО 24 ФЕВРАЛЯ ❗\n\n"
-        "Успей купить безлимит 👇"
-    )
-    
-    keyboard = get_feb23_simple_keyboard()
-    
-    sent_count = 0
-    error_count = 0
-    blocked_count = 0
-    not_found_count = 0
-    
-    for user_id_str, user_data in users.items():
-        try:
-            user_id = int(user_id_str)
-            
-            if not user_data or not isinstance(user_data, dict):
-                continue
-            
-            await bot.send_message(
-                chat_id=user_id,
-                text=message_text,
-                reply_markup=keyboard,
-                parse_mode='HTML'
-            )
-            
-            sent_count += 1
-            
-            if sent_count % 10 == 0:
-                logger.info(f"📨 Отправлено {sent_count} сообщений...")
-            
-            await asyncio.sleep(0.05)
-            
-        except exceptions.TelegramForbiddenError:
-            blocked_count += 1
-            error_count += 1
-            logger.debug(f"🚫 Пользователь {user_id_str} заблокировал бота")
-            
-        except exceptions.TelegramNotFound:
-            not_found_count += 1
-            error_count += 1
-            logger.debug(f"❓ Чат с пользователем {user_id_str} не найден")
-            
-        except exceptions.TelegramRetryAfter as e:
-            logger.warning(f"⏳ Лимит, ждем {e.retry_after} сек")
-            await asyncio.sleep(e.retry_after)
-            
-        except exceptions.TelegramAPIError as e:
-            error_count += 1
-            logger.error(f"❌ Ошибка API пользователю {user_id_str}: {e}")
-            
-        except Exception as e:
-            error_count += 1
-            logger.error(f"❌ Неизвестная ошибка пользователю {user_id_str}: {e}")
-    
-    logger.info(f"✅ Рассылка (23 фев) завершена. Отправлено: {sent_count}, Ошибок: {error_count}")
-    return sent_count, error_count
-
-
-async def send_feb23_promo_day3():
-    """Отправка промо-сообщения на 24 февраля (последний день)"""
-    
-    logger.info("🚀 Начинаю рассылку промо (24 февраля, последний день)...")
-    
-    users = await utils.get_all_users()
-    
-    message_text = (
-        "<b>Спартанцы и Амазонки! 👋</b>\n\n"
-        "Спартанец ты или Амазонка – не важно, мы дарим Тебе скидку <b>33%</b> на ПОЖИЗНЕННУЮ ПОДПИСКУ!\n\n"
-        "🔥 Обычная цена: <s>3000 руб/год</s>\n"
-        "🎁 По акции: <b>1990 руб/навсегда</b>\n\n"
-        "❗️❗️❗️❗️❗️❗️\n\n"
-        "<b>СЕГОДНЯ ПОСЛЕДНИЙ ДЕНЬ❗️</b>\n\n"
-        "Успей купить безлимит 👇"
-    )
-    
-    keyboard = get_feb23_simple_keyboard()
-    
-    sent_count = 0
-    error_count = 0
-    blocked_count = 0
-    not_found_count = 0
-    
-    for user_id_str, user_data in users.items():
-        try:
-            user_id = int(user_id_str)
-            
-            if not user_data or not isinstance(user_data, dict):
-                continue
-            
-            await bot.send_message(
-                chat_id=user_id,
-                text=message_text,
-                reply_markup=keyboard,
-                parse_mode='HTML'
-            )
-            
-            sent_count += 1
-            
-            if sent_count % 10 == 0:
-                logger.info(f"📨 Отправлено {sent_count} сообщений...")
-            
-            await asyncio.sleep(0.05)
-            
-        except exceptions.TelegramForbiddenError:
-            blocked_count += 1
-            error_count += 1
-            logger.debug(f"🚫 Пользователь {user_id_str} заблокировал бота")
-            
-        except exceptions.TelegramNotFound:
-            not_found_count += 1
-            error_count += 1
-            logger.debug(f"❓ Чат с пользователем {user_id_str} не найден")
-            
-        except exceptions.TelegramRetryAfter as e:
-            logger.warning(f"⏳ Лимит, ждем {e.retry_after} сек")
-            await asyncio.sleep(e.retry_after)
-            
-        except exceptions.TelegramAPIError as e:
-            error_count += 1
-            logger.error(f"❌ Ошибка API пользователю {user_id_str}: {e}")
-            
-        except Exception as e:
-            error_count += 1
-            logger.error(f"❌ Неизвестная ошибка пользователю {user_id_str}: {e}")
-    
-    logger.info(f"✅ Рассылка (24 фев) завершена. Отправлено: {sent_count}, Ошибок: {error_count}")
-    return sent_count, error_count
-
-
-# ========== КОМАНДЫ ДЛЯ АДМИНА ==========
-
-@dp.message(Command("send_feb23_22"))
-async def cmd_send_feb23_22(message: Message):
-    """Команда для отправки промо на 22 февраля"""
-    
-    if message is None or not hasattr(message, 'from_user') or message.from_user is None:
-        logger.error("❌ cmd_send_feb23_22: message.from_user is None")
-        return
-    
-    if message.from_user.id != config.ADMIN_ID:
-        await message.answer("⛔ У вас нет прав для этой команды")
-        return
-    
-    await message.answer("🚀 Начинаю рассылку (22 февраля)...")
-    sent, errors = await send_feb23_promo_day1()
-    await message.answer(f"✅ Рассылка завершена!\n📨 Отправлено: {sent}\n❌ Ошибок: {errors}")
-
-
-@dp.message(Command("send_feb23_23"))
-async def cmd_send_feb23_23(message: Message):
-    """Команда для отправки промо на 23 февраля"""
-    
-    if message is None or not hasattr(message, 'from_user') or message.from_user is None:
-        logger.error("❌ cmd_send_feb23_23: message.from_user is None")
-        return
-    
-    if message.from_user.id != config.ADMIN_ID:
-        await message.answer("⛔ У вас нет прав для этой команды")
-        return
-    
-    await message.answer("🚀 Начинаю рассылку (23 февраля)...")
-    sent, errors = await send_feb23_promo_day2()
-    await message.answer(f"✅ Рассылка завершена!\n📨 Отправлено: {sent}\n❌ Ошибок: {errors}")
-
-
-@dp.message(Command("send_feb23_24"))
-async def cmd_send_feb23_24(message: Message):
-    """Команда для отправки промо на 24 февраля (последний день)"""
-    
-    if message is None or not hasattr(message, 'from_user') or message.from_user is None:
-        logger.error("❌ cmd_send_feb23_24: message.from_user is None")
-        return
-    
-    if message.from_user.id != config.ADMIN_ID:
-        await message.answer("⛔ У вас нет прав для этой команды")
-        return
-    
-    await message.answer("🚀 Начинаю рассылку (24 февраля, последний день)...")
-    sent, errors = await send_feb23_promo_day3()
-    await message.answer(f"✅ Рассылка завершена!\n📨 Отправлено: {sent}\n❌ Ошибок: {errors}")
-
-def get_feb23_simple_keyboard():
-    """Простая клавиатура для акции на 23 февраля"""
-    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-    
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(
-                text="🔥 Купить пожизненную за 1990₽", 
-                callback_data="tariff_forever"
-            )],
-            [InlineKeyboardButton(
-                text="🎁 Подробнее об акции", 
-                callback_data="feb23_simple_details"
-            )]
-        ]
-    )
-    return keyboard
-
-@dp.callback_query(F.data == "feb23_simple_details")
-async def feb23_simple_details(callback: CallbackQuery):
-    """Подробности акции на 23 февраля"""
-    
-    if not callback or not callback.message:
-        return
-    
-    message_text = (
-        "🎖️ <b>АКЦИЯ НА 23 ФЕВРАЛЯ!</b>\n\n"
-        "🔥 <b>Пожизненная подписка со скидкой 33%!</b>\n"
-        "💰 Вместо 3000 руб. — всего 1990 руб.\n\n"
-        
-        "🎯 <b>Что дает пожизненная подписка:</b>\n"
-        "• Доступ ко всем 300 заданиям НАВСЕГДА\n"
-        "• Проходи челлендж в своём темпе (хоть год, хоть два)\n"
-        "• Все будущие обновления бесплатно\n\n"
-        
-        "⏳ Акция действует ТОЛЬКО 22, 23 и 24 февраля!\n\n"
-        "<b>Жми кнопку ниже для оплаты</b> 👇"
-    )
-    
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(
-                text="🔥 Оплатить 1990 руб.", 
-                callback_data="tariff_forever"
-            )]
-        ]
-    )
-    
-    await callback.message.edit_text(message_text, reply_markup=keyboard)
-    await callback.answer()
-
 # ========== АВТОМАТИЧЕСКИЕ УВЕДОМЛЕНИЯ О ПОДПИСКЕ ==========
 
 async def check_and_notify_inactive_users():
