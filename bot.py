@@ -2553,7 +2553,7 @@ async def task_completed(message: Message):
     await utils.update_user_activity(user_id)
 # ОБНОВЛЯЕМ обработчик "Подписка 💎"
 @dp.message(F.text == "Подписка 💎")
-async def show_subscription(message: Message):
+async def show_subscription(message: Message, state: FSMContext):
     """Показывает информацию о подписке"""
     try:
         user = message.from_user
@@ -2566,6 +2566,9 @@ async def show_subscription(message: Message):
         if not user_data:
             await message.answer("Сначала зарегистрируйся через /start")
             return
+        
+        # Сбрасываем флаг, если пользователь пришёл напрямую в подписку
+        await state.update_data(coming_from_stages=False)
         
         message_text = "<b>ПОДПИСКА 💎</b>\n\n"
         
@@ -2590,16 +2593,15 @@ async def show_subscription(message: Message):
         
         message_text += "<b>Доступные тарифы:</b>\n"
         
-        # ПОКАЗЫВАЕМ ТОЛЬКО ПЛАТНЫЕ ТАРИФЫ (без trial_ruble)
+        # ПОКАЗЫВАЕМ ТОЛЬКО ПЛАТНЫЕ ТАРИФЫ
         for tariff_id, tariff in config.TARIFFS.items():
-            if tariff_id in ['month', 'year', 'pair_year']:  # ТОЛЬКО платные тарифы
+            if tariff_id in ['month', 'year', 'pair_year']:
                 message_text += f"• {tariff['name']} - {tariff['price']} руб.\n"
         
-        await message.answer(message_text, reply_markup=keyboards.get_payment_keyboard())
+        # Используем клавиатуру С ВЫБОРОМ ЭТАПА
+        await message.answer(message_text, reply_markup=keyboards.get_payment_keyboard_with_stages())
         
     except Exception as e:
-        logger.error(f"❌ Ошибка в show_subscription: {e}")
-        await message.answer("❌ Произошла ошибка при загрузке информации о подписке")
         logger.error(f"❌ Ошибка в show_subscription: {e}")
         await message.answer("❌ Произошла ошибка при загрузке информации о подписке")
 @dp.message(F.text == "⏭️ ПРОПУСТИТЬ")
@@ -2661,6 +2663,95 @@ async def skip_task(message: Message):
     )
     
     await utils.update_user_activity(user_id)
+
+@dp.callback_query(F.data.startswith("tariff_direct_"))
+async def process_tariff_direct_selection(callback: CallbackQuery, state: FSMContext):
+    """
+    Обработка выбора тарифа из раздела этапов - СРАЗУ ПЛАТЁЖ
+    """
+    # Безопасная проверка
+    if not callback or not callback.data:
+        return
+    
+    if not callback.message:
+        await callback.answer("❌ Ошибка: сообщение не найдено")
+        return
+    
+    try:
+        tariff_id = callback.data.replace("tariff_direct_", "")
+        tariff = config.TARIFFS.get(tariff_id)
+        
+        if not tariff:
+            await callback.answer("❌ Тариф не найден")
+            return
+        
+        user = callback.from_user
+        if not user:
+            await callback.answer("❌ Ошибка пользователя")
+            return
+        
+        user_data = await utils.get_user(user.id)
+        if not user_data:
+            await callback.answer("❌ Сначала зарегистрируйтесь через /start")
+            return
+        
+        # СОЗДАЁМ ПЛАТЁЖ СРАЗУ
+        description = f"{tariff['name']} для пользователя {user.first_name or user.id}"
+        payment_data = await payments.create_yookassa_payment(
+            amount=tariff['price'],
+            description=description,
+            user_id=user.id,
+            tariff_id=tariff_id
+        )
+        
+        if not payment_data:
+            await callback.answer("❌ Ошибка создания платежа. Попробуйте позже.")
+            return
+        
+        # Формируем сообщение об оплате
+        message_text = (
+            f"<b>💎 ОПЛАТА ПОДПИСКИ</b>\n\n"
+            f"📦 <b>Тариф:</b> {tariff['name']}\n"
+            f"💰 <b>Сумма:</b> {tariff['price']} руб.\n"
+            f"⏰ <b>Срок:</b> {tariff['days']} дней\n\n"
+            f"🔗 <b>Ссылка для оплаты:</b>\n"
+            f"<a href='{payment_data['confirmation_url']}'>Нажмите для перехода к оплате</a>\n\n"
+            f"📱 <b>После оплаты:</b>\n"
+            f"1. Вернитесь в бота\n"
+            f"2. Нажмите кнопку «✅ Проверить оплату» ниже\n"
+            f"3. Подписка активируется автоматически\n\n"
+            f"⏳ <b>Платеж действителен 30 минут</b>\n"
+            f"💡 <b>ID платежа:</b> <code>{payment_data['payment_id'][:8]}...</code>"
+        )
+        
+        # Клавиатура с кнопками
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(
+                    text="🔗 Перейти к оплате", 
+                    url=payment_data['confirmation_url']
+                )],
+                [InlineKeyboardButton(
+                    text="✅ Проверить оплату", 
+                    callback_data=f"check_payment_{payment_data['payment_id']}"
+                )],
+                [InlineKeyboardButton(
+                    text="🔄 Обновить страницу оплаты", 
+                    callback_data=f"refresh_payment_{payment_data['payment_id']}"
+                )],
+                [InlineKeyboardButton(
+                    text="🔙 Назад к этапам", 
+                    callback_data="back_to_main_stages"
+                )]
+            ]
+        )
+        
+        await callback.message.edit_text(message_text, reply_markup=keyboard)
+        await callback.answer("✅ Платеж создан! Перейдите по ссылке для оплаты.")
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка в process_tariff_direct_selection: {e}")
+        await callback.answer("❌ Произошла ошибка")
 
 # НАЙДИТЕ ЭТОТ ОБРАБОТЧИК И ОБНОВИТЕ ЕГО:
 @dp.callback_query(F.data == "activate_subscription_after_trial")
@@ -2858,7 +2949,9 @@ async def cmd_ref(message: Message):
     )
     await update_user_activity(user_id)
 @dp.callback_query(F.data == "back_to_main")
-async def back_to_main_handler(callback: CallbackQuery):
+
+@dp.callback_query(F.data == "back_to_main")
+async def back_to_main_handler(callback: CallbackQuery, state: FSMContext):
     """Возврат в главное меню из любого раздела"""
     try:
         user = callback.from_user
@@ -2869,7 +2962,16 @@ async def back_to_main_handler(callback: CallbackQuery):
         if not callback.message:
             await callback.answer("❌ Ошибка сообщения")
             return
-            
+        
+        # Очищаем все флаги в состоянии
+        await state.update_data(
+            viewing_stages_mode=False, 
+            viewing_archetype=None,
+            coming_from_stages=False,
+            selected_tariff_id=None,
+            selected_tariff=None
+        )
+        
         # Пытаемся удалить сообщение с инлайн-клавиатурой
         try:
             await callback.message.delete()
@@ -2927,103 +3029,139 @@ async def get_referral_link(callback: CallbackQuery):
 
 
 @dp.callback_query(F.data.startswith("tariff_"))
-async def process_tariff_selection(callback: CallbackQuery):
-    """Обработка выбора тарифа с улучшенной обработкой ошибок"""
-    if not callback.data:
-        await callback.answer("❌ Ошибка: данные не найдены")
+async def process_tariff_selection(callback: CallbackQuery, state: FSMContext):
+    """Обработка выбора тарифа - теперь с выбором этапа"""
+    # Безопасная проверка
+    if not callback or not callback.data:
+        try:
+            await callback.answer("❌ Ошибка данных")
+        except:
+            pass
         return
-        
-    tariff_id = callback.data.replace("tariff_", "")
+    
+    if not callback.message:
+        try:
+            await callback.answer("❌ Ошибка: сообщение не найдено")
+        except:
+            pass
+        return
+    
+    # Проверяем, какой это тип тарифа
+    if callback.data.startswith("tariff_with_stage_"):
+        # Новый формат с выбором этапа
+        tariff_id = callback.data.replace("tariff_with_stage_", "")
+    else:
+        # Старый формат (для совместимости)
+        tariff_id = callback.data.replace("tariff_", "")
+    
     tariff = config.TARIFFS.get(tariff_id)
     
     if not tariff:
         await callback.answer("❌ Тариф не найден")
         return
     
-    if not callback.message:
-        await callback.answer("❌ Ошибка: сообщение не найдено")
+    user = callback.from_user
+    if not user:
+        await callback.answer("❌ Ошибка пользователя")
         return
     
-    user = callback.from_user
     user_id = user.id
+    user_data = await utils.get_user(user_id)
     
-    try:
-        # Создаем платеж в ЮKassa
-        description = f"{tariff['name']} для пользователя {user.first_name or user.id}"
-        payment_data = await payments.create_yookassa_payment(
-            amount=tariff['price'],
-            description=description,
-            user_id=user_id,
-            tariff_id=tariff_id
+    if not user_data:
+        await callback.answer("❌ Сначала зарегистрируйся через /start")
+        return
+    
+    # Если это тариф с выбором этапа - показываем этапы
+    if callback.data.startswith("tariff_with_stage_"):
+        archetype = user_data.get('archetype', 'spartan')
+        
+        # Сохраняем выбранный тариф в состоянии
+        await state.update_data(
+            selected_tariff_id=tariff_id,
+            selected_tariff=tariff
         )
         
-        if not payment_data:
-            await callback.answer("❌ Ошибка создания платежа. Попробуйте позже.")
-            return
-        
-        # Формируем сообщение об оплате
-        message_text = (
-            f"<b>💎 ОПЛАТА ПОДПИСКИ</b>\n\n"
-            f"📦 <b>Тариф:</b> {tariff['name']}\n"
-            f"💰 <b>Сумма:</b> {tariff['price']} руб.\n"
-            f"⏰ <b>Срок:</b> {tariff['days']} дней\n\n"
-        )
-        
-        # Для парных тарифов добавляем пояснение
-        if tariff_id == "pair_year":
-            message_text += (
-                "👥 <b>Это парная подписка на двух человек!</b>\n\n"
-                "После успешной оплаты:\n"
-                "• Ваша подписка активируется автоматически\n"
-                "• Вы получите инвайт-код для второго участника\n"
-                "• Передайте код другу для активации\n\n"
-            )
-        
-        message_text += (
-            f"🔗 <b>Ссылка для оплаты:</b>\n"
-            f"<a href='{payment_data['confirmation_url']}'>Нажмите для перехода к оплате</a>\n\n"
-            
-            f"📱 <b>После оплаты:</b>\n"
-            f"1. Вернитесь в бота\n"
-            f"2. Нажмите кнопку «✅ Проверить оплату» ниже\n"
-            f"3. Подписка активируется автоматически\n\n"
-            
-            f"⏳ <b>Платеж действителен 30 минут</b>\n"
-            f"💡 <b>ID платежа:</b> <code>{payment_data['payment_id'][:8]}...</code>"
-        )
-        
-        # Клавиатура с кнопками
-        keyboard = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(
-                    text="🔗 Перейти к оплате", 
-                    url=payment_data['confirmation_url']
-                )],
-                [InlineKeyboardButton(
-                    text="✅ Проверить оплату", 
-                    callback_data=f"check_payment_{payment_data['payment_id']}"
-                )],
-                [InlineKeyboardButton(
-                    text="🔄 Обновить страницу оплаты", 
-                    callback_data=f"refresh_payment_{payment_data['payment_id']}"
-                )],
-                [InlineKeyboardButton(
-                    text="🔙 Назад к тарифам", 
-                    callback_data="back_to_tariffs"
-                )]
-            ]
-        )
-        
+        # Показываем первую страницу этапов
         try:
-            await callback.message.edit_text(message_text, reply_markup=keyboard)
-            await callback.answer("✅ Платеж создан! Перейдите по ссылке для оплаты.")
+            await callback.message.edit_text(
+                f"🎯 <b>ВЫБЕРИТЕ ЭТАП ДЛЯ СТАРТА</b>\n\n"
+                f"📦 <b>Тариф:</b> {tariff['name']}\n"
+                f"💰 <b>Стоимость:</b> {tariff['price']} руб.\n"
+                f"⏰ <b>Срок:</b> {tariff['days']} дней\n\n"
+                f"Выберите этап, с которого хотите начать:\n\n"
+                f"📌 <b>Страница 1 из 2 (этапы 1-5)</b>",
+                reply_markup=keyboards.get_stages_keyboard(archetype, 0)
+            )
         except Exception as e:
             logger.error(f"Ошибка при редактировании сообщения: {e}")
             await callback.answer("❌ Не удалось обновить сообщение")
+    else:
+        # Старый формат - сразу создаем платеж (для совместимости)
+        try:
+            # Создаем платеж в ЮKassa
+            description = f"{tariff['name']} для пользователя {user.first_name or user.id}"
+            payment_data = await payments.create_yookassa_payment(
+                amount=tariff['price'],
+                description=description,
+                user_id=user_id,
+                tariff_id=tariff_id
+            )
             
-    except Exception as e:
-        logger.error(f"❌ Ошибка создания платежа: {e}")
-        await callback.answer("❌ Ошибка при создании платежа")
+            if not payment_data:
+                await callback.answer("❌ Ошибка создания платежа. Попробуйте позже.")
+                return
+            
+            # Формируем сообщение об оплате
+            message_text = (
+                f"<b>💎 ОПЛАТА ПОДПИСКИ</b>\n\n"
+                f"📦 <b>Тариф:</b> {tariff['name']}\n"
+                f"💰 <b>Сумма:</b> {tariff['price']} руб.\n"
+                f"⏰ <b>Срок:</b> {tariff['days']} дней\n\n"
+                f"🔗 <b>Ссылка для оплаты:</b>\n"
+                f"<a href='{payment_data['confirmation_url']}'>Нажмите для перехода к оплате</a>\n\n"
+                f"📱 <b>После оплаты:</b>\n"
+                f"1. Вернитесь в бота\n"
+                f"2. Нажмите кнопку «✅ Проверить оплату» ниже\n"
+                f"3. Подписка активируется автоматически\n\n"
+                f"⏳ <b>Платеж действителен 30 минут</b>\n"
+                f"💡 <b>ID платежа:</b> <code>{payment_data['payment_id'][:8]}...</code>"
+            )
+            
+            # Клавиатура с кнопками
+            keyboard = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(
+                        text="🔗 Перейти к оплате", 
+                        url=payment_data['confirmation_url']
+                    )],
+                    [InlineKeyboardButton(
+                        text="✅ Проверить оплату", 
+                        callback_data=f"check_payment_{payment_data['payment_id']}"
+                    )],
+                    [InlineKeyboardButton(
+                        text="🔄 Обновить страницу оплаты", 
+                        callback_data=f"refresh_payment_{payment_data['payment_id']}"
+                    )],
+                    [InlineKeyboardButton(
+                        text="🔙 Назад к тарифам", 
+                        callback_data="back_to_tariffs"
+                    )]
+                ]
+            )
+            
+            await callback.message.edit_text(message_text, reply_markup=keyboard)
+            await callback.answer("✅ Платеж создан! Перейдите по ссылке для оплаты.")
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка создания платежа: {e}")
+            await callback.answer("❌ Ошибка при создании платежа")
+    
+    try:
+        await callback.answer()
+    except:
+        pass
+
 @dp.callback_query(F.data.startswith("check_payment_"))
 async def check_payment_handler(callback: CallbackQuery):
     """Проверка статуса оплаты с безопасной обработкой"""
@@ -3165,7 +3303,7 @@ async def refresh_payment_handler(callback: CallbackQuery):
         await callback.answer("❌ Платеж не найден")
 
 @dp.callback_query(F.data == "back_to_tariffs")
-async def back_to_tariffs_handler(callback: CallbackQuery):
+async def back_to_tariffs_handler(callback: CallbackQuery, state: FSMContext):
     """Возврат к выбору тарифов"""
     if not callback:
         return
@@ -3176,12 +3314,23 @@ async def back_to_tariffs_handler(callback: CallbackQuery):
         except:
             pass
         return
-        
+    
     try:
+        # Получаем флаг, откуда пришёл пользователь
+        state_data = await state.get_data()
+        coming_from_stages = state_data.get('coming_from_stages', False)
+        
+        # Разный текст в зависимости от источника
+        if coming_from_stages:
+            title = "💎 ВЫБОР ПОДПИСКИ"
+            description = "Выберите подходящий тариф, чтобы начать прохождение этапов:"
+        else:
+            title = "💎 ВЫБОР ПОДПИСКИ"
+            description = "Выберите подходящий тариф:"
+        
         success = await safe_edit_message(
             callback,
-            "<b>💎 ВЫБОР ПОДПИСКИ</b>\n\n"
-            "Выберите подходящий тариф:",
+            f"<b>{title}</b>\n\n{description}",
             keyboards.get_payment_keyboard()
         )
         if success:
@@ -3189,6 +3338,8 @@ async def back_to_tariffs_handler(callback: CallbackQuery):
         else:
             await callback.answer("❌ Ошибка обновления")
     except Exception as e:
+        logger.error(f"Ошибка возврата к тарифам: {e}")
+        await callback.answer("❌ Ошибка")
         logger.error(f"Ошибка возврата к тарифам: {e}")
         await callback.answer("❌ Ошибка")
 
@@ -9990,6 +10141,733 @@ async def check_me_command(message: Message):
         debug_info += f"📝 Задание дня: {task.get('day', '?')} - {task.get('text', 'нет текста')[:50]}...\n"
     
     await message.answer(debug_info)
+
+# Добавьте в начало bot.py, где другие импорты:
+from aiogram.fsm.context import FSMContext  # Убедитесь, что этот импорт есть
+
+# ИСПРАВЛЕННЫЙ ОБРАБОТЧИК view_stage_details
+@dp.callback_query(F.data.startswith("view_stage_"))
+async def view_stage_details(callback: CallbackQuery, state: FSMContext):
+    """
+    Просмотр деталей конкретного этапа с примерами заданий
+    Формат: view_stage_{stage_num}
+    """
+    # Безопасная проверка
+    if not callback or not callback.data:
+        return
+    
+    if not callback.message:
+        await callback.answer("❌ Ошибка: сообщение не найдено")
+        return
+    
+    try:
+        stage_num = int(callback.data.replace("view_stage_", ""))
+        
+        # Получаем данные пользователя
+        user = callback.from_user
+        if not user:
+            await callback.answer("❌ Ошибка пользователя")
+            return
+        
+        user_data = await utils.get_user(user.id)
+        if not user_data:
+            await callback.answer("❌ Сначала зарегистрируйтесь через /start")
+            return
+        
+        # Получаем данные из состояния
+        state_data = await state.get_data()
+        tariff_id = state_data.get('selected_tariff_id', 'month')
+        tariff = state_data.get('selected_tariff', config.TARIFFS.get('month'))
+        
+        archetype = user_data.get('archetype', 'spartan')
+        
+        # Получаем описание этапа
+        stage_info = await utils.get_stage_description(stage_num, archetype)
+        
+        # Форматируем сообщение
+        message_text = await utils.format_stage_message(stage_info, user_data)
+        
+        # Добавляем информацию о тарифе
+        message_text += f"\n\n📦 <b>Выбранный тариф:</b> {tariff['name']} ({tariff['price']} руб.)"
+        
+        # Показываем детали этапа
+        await callback.message.edit_text(
+            message_text,
+            reply_markup=keyboards.get_stage_detail_keyboard(stage_num, tariff_id)
+        )
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка в view_stage_details: {e}")
+        await callback.answer("❌ Ошибка загрузки этапа")
+
+
+# ИСПРАВЛЕННЫЙ ОБРАБОТЧИК switch_stages_page
+@dp.callback_query(F.data.startswith("stages_page_"))
+async def switch_stages_page(callback: CallbackQuery, state: FSMContext):
+    """
+    Переключение между страницами этапов (1-5 и 6-10)
+    Формат: stages_page_{page_num}
+    """
+    if not callback or not callback.data:
+        return
+    
+    if not callback.message:
+        await callback.answer("❌ Ошибка: сообщение не найдено")
+        return
+    
+    try:
+        page = int(callback.data.replace("stages_page_", ""))
+        
+        user = callback.from_user
+        if not user:
+            await callback.answer("❌ Ошибка пользователя")
+            return
+        
+        user_data = await utils.get_user(user.id)
+        if not user_data:
+            await callback.answer("❌ Сначала зарегистрируйтесь через /start")
+            return
+        
+        archetype = user_data.get('archetype', 'spartan')
+        
+        # Получаем данные из состояния
+        state_data = await state.get_data()
+        tariff = state_data.get('selected_tariff', config.TARIFFS.get('month'))
+        
+        page_text = "1-5" if page == 0 else "6-10"
+        
+        await callback.message.edit_text(
+            f"🎯 <b>ВЫБЕРИТЕ ЭТАП ДЛЯ СТАРТА</b>\n\n"
+            f"📦 <b>Тариф:</b> {tariff['name']}\n"
+            f"💰 <b>Стоимость:</b> {tariff['price']} руб.\n\n"
+            f"📌 <b>Страница {page+1} из 2 (этапы {page_text})</b>",
+            reply_markup=keyboards.get_stages_keyboard(archetype, page)
+        )
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка в switch_stages_page: {e}")
+        await callback.answer("❌ Ошибка")
+
+@dp.message(F.text == "ЭТАПЫ 300 ПИНКОВ 📋")
+async def show_stages_from_main_menu(message: Message, state: FSMContext):
+    """
+    Показывает список этапов из главного меню
+    """
+    user = message.from_user
+    if not user:
+        return
+    
+    user_id = user.id
+    user_data = await utils.get_user(user_id)
+    
+    # Если пользователь зарегистрирован, используем его архетип, иначе по умолчанию спартанец
+    archetype = 'spartan'  # Значение по умолчанию
+    if user_data and user_data.get('archetype'):
+        archetype = user_data.get('archetype')
+    
+    # Сохраняем в состоянии, что мы в режиме просмотра этапов и выбранный архетип
+    await state.update_data(
+        viewing_stages_mode=True,
+        viewing_archetype=archetype
+    )
+    
+    await message.answer(
+        "📋 <b>ЭТАПЫ ЗАДАНИЙ 300 ПИНКОВ</b>\n\n"
+        "Весь путь разделён на 10 этапов, каждый по 30 дней.\n"
+        f"Выбран путь: {'⚔️ Спартанец' if archetype == 'spartan' else '🛡️ Амазонка'}\n"
+        "Выберите этап, чтобы увидеть его описание и примеры заданий:\n\n"
+        "📌 <b>Страница 1 из 2 (этапы 1-5)</b>",
+        reply_markup=keyboards.get_stages_main_menu_keyboard(archetype, 0)
+    )
+
+@dp.callback_query(F.data.startswith("main_stages_page_"))
+async def main_switch_stages_page(callback: CallbackQuery, state: FSMContext):
+    """
+    Переключение страниц этапов из главного меню
+    """
+    if not callback or not callback.data:
+        return
+    
+    if not callback.message:
+        await callback.answer("❌ Ошибка: сообщение не найдено")
+        return
+    
+    try:
+        page = int(callback.data.replace("main_stages_page_", ""))
+        
+        # Получаем данные из состояния
+        state_data = await state.get_data()
+        archetype = state_data.get('viewing_archetype', 'spartan')  # Значение по умолчанию
+        
+        page_text = "1-5" if page == 0 else "6-10"
+        
+        # Проверяем, что callback.message существует
+        if callback.message:
+            await callback.message.edit_text(
+                f"📋 <b>ЭТАПЫ ЗАДАНИЙ 300 ПИНКОВ</b>\n\n"
+                f"🎯 Выбран путь: {'⚔️ Спартанец' if archetype == 'spartan' else '🛡️ Амазонка'}\n"
+                f"📌 <b>Страница {page+1} из 2 (этапы {page_text})</b>",
+                reply_markup=keyboards.get_stages_main_menu_keyboard(archetype, page)
+            )
+        
+        await callback.answer()
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка в main_switch_stages_page: {e}")
+        try:
+            await callback.answer("❌ Ошибка")
+        except:
+            pass
+
+@dp.callback_query(F.data.startswith("main_view_stage_"))
+async def main_view_stage_details(callback: CallbackQuery, state: FSMContext):
+    """
+    Просмотр деталей этапа из главного меню
+    """
+    if not callback or not callback.data:
+        return
+    
+    if not callback.message:
+        await callback.answer("❌ Ошибка: сообщение не найдено")
+        return
+    
+    try:
+        stage_num = int(callback.data.replace("main_view_stage_", ""))
+        
+        # Получаем выбранный архетип из состояния или используем спартанец по умолчанию
+        state_data = await state.get_data()
+        archetype = state_data.get('viewing_archetype', 'spartan')
+        
+        # Получаем описание этапа
+        stage_info = await utils.get_stage_description(stage_num, archetype)
+        
+        # Создаем временные данные пользователя для форматирования
+        temp_user_data = {'archetype': archetype}
+        
+        # Форматируем сообщение
+        message_text = await utils.format_stage_message(stage_info, temp_user_data)
+        
+        # Добавляем информацию о том, что это предпросмотр
+        message_text += "\n\n💡 <i>Это предварительный просмотр этапа. Чтобы начать прохождение, оформите подписку.</i>"
+        
+        # Проверяем, что callback.message существует
+        if callback.message:
+            await callback.message.edit_text(
+                message_text,
+                reply_markup=keyboards.get_stage_main_detail_keyboard(stage_num)
+            )
+        
+        await callback.answer()
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка в main_view_stage_details: {e}")
+        try:
+            await callback.answer("❌ Ошибка загрузки этапа")
+        except:
+            pass
+
+@dp.callback_query(F.data.startswith("main_set_archetype_"))
+async def main_set_archetype(callback: CallbackQuery, state: FSMContext):
+    """
+    Выбор архетипа для просмотра этапов
+    """
+    if not callback or not callback.data:
+        return
+    
+    if not callback.message:
+        await callback.answer("❌ Ошибка: сообщение не найдено")
+        return
+    
+    try:
+        archetype = callback.data.replace("main_set_archetype_", "")
+        
+        # Сохраняем выбранный архетип в состоянии
+        await state.update_data(viewing_archetype=archetype)
+        
+        # Проверяем, что callback.message существует
+        if callback.message:
+            # Показываем первую страницу этапов с выбранным архетипом
+            await callback.message.edit_text(
+                f"📋 <b>ЭТАПЫ ЗАДАНИЙ 300 ПИНКОВ</b>\n\n"
+                f"🎯 Выбран путь: {'⚔️ Спартанец' if archetype == 'spartan' else '🛡️ Амазонка'}\n"
+                f"📌 <b>Страница 1 из 2 (этапы 1-5)</b>",
+                reply_markup=keyboards.get_stages_main_menu_keyboard(archetype, 0)
+            )
+        
+        await callback.answer()
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка в main_set_archetype: {e}")
+        try:
+            await callback.answer("❌ Ошибка")
+        except:
+            pass
+
+@dp.callback_query(F.data == "back_to_main_stages")
+async def back_to_main_stages(callback: CallbackQuery, state: FSMContext):
+    """
+    Возврат к списку этапов из детального просмотра или из оплаты
+    """
+    if not callback or not callback.message:
+        return
+    
+    try:
+        # Получаем сохраненный архетип
+        state_data = await state.get_data()
+        archetype = state_data.get('viewing_archetype', 'spartan')
+        
+        # Проверяем, что callback.message существует
+        if callback.message:
+            await callback.message.edit_text(
+                f"📋 <b>ЭТАПЫ ЗАДАНИЙ 300 ПИНКОВ</b>\n\n"
+                f"🎯 Выбран путь: {'⚔️ Спартанец' if archetype == 'spartan' else '🛡️ Амазонка'}\n"
+                f"📌 <b>Страница 1 из 2 (этапы 1-5)</b>",
+                reply_markup=keyboards.get_stages_main_menu_keyboard(archetype, 0)
+            )
+        
+        await callback.answer()
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка в back_to_main_stages: {e}")
+        try:
+            await callback.answer("❌ Ошибка")
+        except:
+            pass
+
+
+@dp.callback_query(F.data == "go_to_subscription")
+async def go_to_subscription_from_stages(callback: CallbackQuery, state: FSMContext):
+    """
+    Переход к подписке из просмотра этапов
+    """
+    if not callback or not callback.message:
+        return
+    
+    try:
+        # Сохраняем флаг, что пользователь пришёл из раздела этапов
+        await state.update_data(coming_from_stages=True)
+        
+        # Проверяем, что callback.message существует
+        if callback.message:
+            # Показываем тарифы для оплаты (БЕЗ выбора этапа)
+            await callback.message.edit_text(
+                "<b>💎 ОФОРМЛЕНИЕ ПОДПИСКИ</b>\n\n"
+                "Выберите подходящий тариф, чтобы начать прохождение этапов:",
+                reply_markup=keyboards.get_payment_keyboard_direct()  # ИЗМЕНЕНО
+            )
+        
+        await callback.answer()
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка в go_to_subscription_from_stages: {e}")
+        try:
+            await callback.answer("❌ Ошибка")
+        except:
+            pass
+# ИСПРАВЛЕННЫЙ ОБРАБОТЧИК select_stage_
+@dp.callback_query(F.data.startswith("select_stage_"))
+async def select_stage_for_payment(callback: CallbackQuery, state: FSMContext):
+    """
+    Выбор этапа и переход к оплате
+    Формат: select_stage_{stage_num}_{tariff_id}
+    """
+    # Защита от None
+    if callback is None:
+        return
+    
+    if not hasattr(callback, 'data') or callback.data is None:
+        try:
+            await callback.answer("❌ Ошибка данных")
+        except:
+            pass
+        return
+    
+    if not hasattr(callback, 'from_user') or callback.from_user is None:
+        return
+    
+    message_obj = getattr(callback, 'message', None)
+    
+    try:
+        # Парсим данные
+        parts = callback.data.replace("select_stage_", "").split("_")
+        if len(parts) < 2:
+            try:
+                await callback.answer("❌ Неверный формат данных")
+            except:
+                pass
+            return
+            
+        stage_num = int(parts[0])
+        tariff_id = parts[1]
+        
+        tariff = config.TARIFFS.get(tariff_id)
+        if not tariff:
+            try:
+                await callback.answer("❌ Тариф не найден")
+            except:
+                pass
+            return
+        
+        user = callback.from_user
+        user_id = user.id
+        user_data = await utils.get_user(user_id)
+        
+        if not user_data:
+            try:
+                await callback.answer("❌ Сначала зарегистрируйтесь через /start")
+            except:
+                pass
+            return
+        
+        # Сохраняем выбор этапа
+        await utils.save_user_stage_choice(user_id, tariff_id, stage_num)
+        
+        # Пытаемся создать платеж
+        try:
+            # Проверяем, есть ли модуль payments и функция create_yookassa_payment
+            if not hasattr(payments, 'create_yookassa_payment'):
+                logger.error("❌ Функция create_yookassa_payment не найдена в модуле payments")
+                await callback.answer("❌ Ошибка настройки платежной системы")
+                return
+            
+            description = f"{tariff['name']} (этап {stage_num}) для {user.first_name or user.id}"
+            payment_data = await payments.create_yookassa_payment(
+                amount=tariff['price'],
+                description=description,
+                user_id=user_id,
+                tariff_id=tariff_id
+            )
+            
+            if not payment_data:
+                await callback.answer("❌ Ошибка создания платежа. Попробуйте позже.")
+                return
+            
+            # Формируем сообщение с оплатой
+            message_text = (
+                f"<b>💎 ОПЛАТА ПОДПИСКИ</b>\n\n"
+                f"📦 <b>Тариф:</b> {tariff['name']}\n"
+                f"🎯 <b>Выбранный этап:</b> {stage_num}\n"
+                f"💰 <b>Сумма:</b> {tariff['price']} руб.\n"
+                f"⏰ <b>Срок:</b> {tariff['days']} дней\n\n"
+                f"🔗 <b>Ссылка для оплаты:</b>\n"
+                f"<a href='{payment_data['confirmation_url']}'>Нажмите для перехода к оплате</a>\n\n"
+                f"📱 <b>После оплаты:</b>\n"
+                f"1. Вернитесь в бота\n"
+                f"2. Нажмите кнопку «✅ Проверить оплату» ниже\n"
+                f"3. Подписка активируется автоматически\n"
+                f"4. Задания начнутся с выбранного этапа!\n\n"
+                f"⏳ <b>Платеж действителен 30 минут</b>\n"
+                f"💡 <b>ID платежа:</b> <code>{payment_data['payment_id'][:8]}...</code>"
+            )
+            
+            # Создаем клавиатуру
+            keyboard = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(
+                        text="🔗 Перейти к оплате", 
+                        url=payment_data['confirmation_url']
+                    )],
+                    [InlineKeyboardButton(
+                        text="✅ Проверить оплату", 
+                        callback_data=f"check_payment_{payment_data['payment_id']}"
+                    )],
+                    [InlineKeyboardButton(
+                        text="🔙 Назад к выбору этапа",
+                        callback_data=f"back_to_stages_{tariff_id}"
+                    )]
+                ]
+            )
+            
+            # Отправляем сообщение
+            if message_obj is not None:
+                try:
+                    await message_obj.edit_text(message_text, reply_markup=keyboard)
+                except:
+                    await bot.send_message(
+                        chat_id=user_id,
+                        text=message_text,
+                        reply_markup=keyboard
+                    )
+            else:
+                await bot.send_message(
+                    chat_id=user_id,
+                    text=message_text,
+                    reply_markup=keyboard
+                )
+            
+            await callback.answer("✅ Платеж создан!")
+            
+        except ImportError as e:
+            logger.error(f"❌ Ошибка импорта payments: {e}")
+            await callback.answer("❌ Ошибка платежной системы")
+        except AttributeError as e:
+            logger.error(f"❌ Ошибка атрибута в payments: {e}")
+            await callback.answer("❌ Ошибка платежной системы")
+        except Exception as e:
+            logger.error(f"❌ Ошибка создания платежа: {e}")
+            await callback.answer("❌ Ошибка при создании платежа")
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка в select_stage_for_payment: {e}")
+        try:
+            await callback.answer("❌ Ошибка")
+        except:
+            pass
+
+@dp.callback_query(F.data.startswith("tariff_with_stage_"))
+async def process_tariff_with_stage_selection(callback: CallbackQuery, state: FSMContext):
+    """
+    Обработка выбора тарифа с последующим выбором этапа
+    """
+    # Безопасная проверка
+    if not callback or not callback.data:
+        return
+    
+    if not callback.message:
+        await callback.answer("❌ Ошибка: сообщение не найдено")
+        return
+    
+    try:
+        tariff_id = callback.data.replace("tariff_with_stage_", "")
+        tariff = config.TARIFFS.get(tariff_id)
+        
+        if not tariff:
+            await callback.answer("❌ Тариф не найден")
+            return
+        
+        user = callback.from_user
+        if not user:
+            await callback.answer("❌ Ошибка пользователя")
+            return
+        
+        user_data = await utils.get_user(user.id)
+        if not user_data:
+            await callback.answer("❌ Сначала зарегистрируйтесь через /start")
+            return
+        
+        # Получаем флаг, откуда пришёл пользователь
+        state_data = await state.get_data()
+        coming_from_stages = state_data.get('coming_from_stages', False)
+        
+        # Если пользователь пришёл из раздела этапов - сразу создаём платёж
+        if coming_from_stages:
+            # Создаём платеж сразу
+            description = f"{tariff['name']} для пользователя {user.first_name or user.id}"
+            payment_data = await payments.create_yookassa_payment(
+                amount=tariff['price'],
+                description=description,
+                user_id=user.id,
+                tariff_id=tariff_id
+            )
+            
+            if not payment_data:
+                await callback.answer("❌ Ошибка создания платежа. Попробуйте позже.")
+                return
+            
+            # Формируем сообщение об оплате
+            message_text = (
+                f"<b>💎 ОПЛАТА ПОДПИСКИ</b>\n\n"
+                f"📦 <b>Тариф:</b> {tariff['name']}\n"
+                f"💰 <b>Сумма:</b> {tariff['price']} руб.\n"
+                f"⏰ <b>Срок:</b> {tariff['days']} дней\n\n"
+                f"🔗 <b>Ссылка для оплаты:</b>\n"
+                f"<a href='{payment_data['confirmation_url']}'>Нажмите для перехода к оплате</a>\n\n"
+                f"📱 <b>После оплаты:</b>\n"
+                f"1. Вернитесь в бота\n"
+                f"2. Нажмите кнопку «✅ Проверить оплату» ниже\n"
+                f"3. Подписка активируется автоматически\n\n"
+                f"⏳ <b>Платеж действителен 30 минут</b>\n"
+                f"💡 <b>ID платежа:</b> <code>{payment_data['payment_id'][:8]}...</code>"
+            )
+            
+            # Клавиатура с кнопками
+            keyboard = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(
+                        text="🔗 Перейти к оплате", 
+                        url=payment_data['confirmation_url']
+                    )],
+                    [InlineKeyboardButton(
+                        text="✅ Проверить оплату", 
+                        callback_data=f"check_payment_{payment_data['payment_id']}"
+                    )],
+                    [InlineKeyboardButton(
+                        text="🔄 Обновить страницу оплаты", 
+                        callback_data=f"refresh_payment_{payment_data['payment_id']}"
+                    )],
+                    [InlineKeyboardButton(
+                        text="🔙 Назад к тарифам", 
+                        callback_data="back_to_tariffs"
+                    )]
+                ]
+            )
+            
+            await callback.message.edit_text(message_text, reply_markup=keyboard)
+            await callback.answer("✅ Платеж создан! Перейдите по ссылке для оплаты.")
+            
+        else:
+            # Если пользователь пришёл из подписки - показываем выбор этапа
+            archetype = user_data.get('archetype', 'spartan')
+            
+            # Сохраняем выбранный тариф в состоянии
+            await state.update_data(
+                selected_tariff_id=tariff_id,
+                selected_tariff=tariff
+            )
+            
+            # Показываем первую страницу этапов
+            await callback.message.edit_text(
+                f"🎯 <b>ВЫБЕРИТЕ ЭТАП ДЛЯ СТАРТА</b>\n\n"
+                f"📦 <b>Тариф:</b> {tariff['name']}\n"
+                f"💰 <b>Стоимость:</b> {tariff['price']} руб.\n"
+                f"⏰ <b>Срок:</b> {tariff['days']} дней\n\n"
+                f"Выберите этап, с которого хотите начать:\n\n"
+                f"📌 <b>Страница 1 из 2 (этапы 1-5)</b>",
+                reply_markup=keyboards.get_stages_keyboard(archetype, 0)
+            )
+        
+        await callback.answer()
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка в process_tariff_with_stage_selection: {e}")
+        await callback.answer("❌ Произошла ошибка")
+# ИСПРАВЛЕННЫЙ ОБРАБОТЧИК back_to_stages_
+@dp.callback_query(F.data.startswith("back_to_stages_"))
+async def back_to_stages(callback: CallbackQuery, state: FSMContext):
+    """
+    Возврат к выбору этапа
+    Формат: back_to_stages_{tariff_id}
+    """
+    # 1. ПРОВЕРКА callback
+    if callback is None:
+        logger.error("❌ back_to_stages: callback is None")
+        return
+    
+    # 2. ПРОВЕРКА callback.data
+    if not hasattr(callback, 'data') or callback.data is None:
+        logger.error("❌ back_to_stages: callback.data is None")
+        try:
+            await callback.answer("❌ Ошибка данных")
+        except:
+            pass
+        return
+    
+    # 3. ПРОВЕРКА callback.from_user
+    if not hasattr(callback, 'from_user') or callback.from_user is None:
+        logger.error("❌ back_to_stages: callback.from_user is None")
+        return
+    
+    # 4. ПРОВЕРКА callback.message
+    message_obj = getattr(callback, 'message', None)
+    
+    try:
+        tariff_id = callback.data.replace("back_to_stages_", "")
+        
+        # ✅ ИСПРАВЛЕНИЕ: Безопасно получаем тариф с проверкой на None
+        tariff = config.TARIFFS.get(tariff_id)
+        
+        # ✅ Если тариф не найден, используем тариф по умолчанию
+        if tariff is None:
+            logger.warning(f"⚠️ Тариф {tariff_id} не найден, использую тариф по умолчанию 'month'")
+            tariff = config.TARIFFS.get('month')
+            
+            # Если и month не найден, создаем заглушку
+            if tariff is None:
+                tariff = {
+                    'name': 'Подписка',
+                    'price': 0,
+                    'days': 30
+                }
+        
+        user = callback.from_user
+        if not user:
+            try:
+                await callback.answer("❌ Ошибка пользователя")
+            except:
+                pass
+            return
+        
+        user_id = user.id
+        user_data = await utils.get_user(user_id)
+        
+        if not user_data:
+            try:
+                await callback.answer("❌ Сначала зарегистрируйтесь через /start")
+            except:
+                pass
+            return
+        
+        archetype = user_data.get('archetype', 'spartan')
+        
+        # Сохраняем выбранный тариф в состоянии
+        await state.update_data(
+            selected_tariff_id=tariff_id,
+            selected_tariff=tariff
+        )
+        
+        # 5. ОСНОВНАЯ ЛОГИКА - проверяем наличие message_obj
+        # ✅ ИСПРАВЛЕНИЕ: Безопасно обращаемся к ключам словаря
+        tariff_name = tariff.get('name', 'Подписка')
+        tariff_price = tariff.get('price', 0)
+        tariff_days = tariff.get('days', 30)
+        
+        message_text = (
+            f"🎯 <b>ВЫБЕРИТЕ ЭТАП ДЛЯ СТАРТА</b>\n\n"
+            f"📦 <b>Тариф:</b> {tariff_name}\n"
+            f"💰 <b>Стоимость:</b> {tariff_price} руб.\n"
+            f"⏰ <b>Срок:</b> {tariff_days} дней\n\n"
+            f"Выберите этап, с которого хотите начать:\n\n"
+            f"📌 <b>Страница 1 из 2 (этапы 1-5)</b>"
+        )
+        
+        # Если есть сообщение для редактирования
+        if message_obj is not None:
+            try:
+                await message_obj.edit_text(
+                    message_text,
+                    reply_markup=keyboards.get_stages_keyboard(archetype, 0)
+                )
+                # Успешно отредактировали - отвечаем на callback
+                try:
+                    await callback.answer()
+                except:
+                    pass
+                return
+            except Exception as e:
+                logger.error(f"❌ Ошибка редактирования сообщения: {e}")
+                # Если не удалось отредактировать, пробуем отправить новое
+                pass
+        
+        # Если сообщения нет или не удалось отредактировать - отправляем новое
+        try:
+            await bot.send_message(
+                chat_id=user.id,
+                text=message_text,
+                reply_markup=keyboards.get_stages_keyboard(archetype, 0)
+            )
+            
+            # Пытаемся удалить старое сообщение, если оно есть
+            if message_obj is not None:
+                try:
+                    await message_obj.delete()
+                except:
+                    pass
+        except Exception as e:
+            logger.error(f"❌ Ошибка отправки нового сообщения: {e}")
+        
+        # Отвечаем на callback
+        try:
+            await callback.answer()
+        except:
+            pass
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка в back_to_stages: {e}")
+        try:
+            await callback.answer("❌ Ошибка")
+        except:
+            pass
+
 # В функции main() добавляем:
 async def main():
     """Главная функция запуска бота"""

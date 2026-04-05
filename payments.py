@@ -114,3 +114,5 @@ async def check_payment_status(payment_id):
     except Exception as e:
         print(f"❌ Ошибка проверки статуса платежа {payment_id}: {e}")
         return None
+    
+    # В payments.py исправьте функцию check_payment_status

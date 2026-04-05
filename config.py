@@ -29,7 +29,26 @@ TARIFFS = {
 CERTIFICATES_DIR = "certificates/generated"
 CERTIFICATES_BASE_URL = os.getenv("CERTIFICATES_BASE_URL", "https://ваш-домен.ру/certificates")
 
-# Добавьте или обновите эти настройки:
+
+
+# Добавьте или обновите эти настройки:# В начало файла config.py, после импортов добавьте:
+import json
+import logging
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+# Загрузка этапов из stages.json
+BASE_DIR = Path(__file__).parent
+STAGES_FILE = BASE_DIR / 'stages.json'
+
+try:
+    with open(STAGES_FILE, 'r', encoding='utf-8') as f:
+        STAGES = json.load(f)
+    logger.info(f"✅ Загружено {len(STAGES)} этапов из stages.json")
+except Exception as e:
+    logger.error(f"❌ Ошибка загрузки stages.json: {e}")
+    STAGES = {}
 BOT_USERNAME = "pinkov300_bot"  
 SUPPORT_USERNAME = "@vladgrigoryan" 
 # ЧАСОВЫЕ ПОЯСА РОССИИ
