@@ -1,4 +1,3 @@
-import database
 import json
 import aiofiles
 import random
