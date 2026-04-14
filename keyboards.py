@@ -582,4 +582,3 @@ def get_payment_keyboard_direct():
     ]
     
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
-
