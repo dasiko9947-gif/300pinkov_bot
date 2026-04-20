@@ -1879,33 +1879,22 @@ async def format_stage_message(stage_info: dict, user_data: dict) -> str:
 async def save_user_stage_choice(user_id: int, tariff_id: str, stage_num: int) -> bool:
     """
     Сохраняет выбор этапа пользователя перед оплатой
-    
-    Args:
-        user_id: ID пользователя
-        tariff_id: ID тарифа (month/year/pair_year)
-        stage_num: выбранный этап (1-10)
-    
-    Returns:
-        bool: успешно ли сохранено
     """
     try:
         from datetime import datetime
         
         user_data = await get_user(user_id)
         if not user_data:
-            logger.error(f"❌ Пользователь {user_id} не найден при сохранении выбора этапа")
+            logger.error(f"❌ Пользователь {user_id} не найден")
             return False
         
-        # Сохраняем информацию о выбранном этапе
-        if 'pending_subscription' not in user_data:
-            user_data['pending_subscription'] = {}
-        
-        user_data['pending_subscription']['selected_stage'] = stage_num
-        user_data['pending_subscription']['tariff_id'] = tariff_id
-        user_data['pending_subscription']['selected_at'] = datetime.now().isoformat()
+        # Сохраняем выбранный этап
+        user_data['selected_stage'] = stage_num
+        user_data['selected_stage_tariff'] = tariff_id
+        user_data['selected_stage_at'] = datetime.now().isoformat()
         
         await save_user(user_id, user_data)
-        logger.info(f"✅ Сохранен выбор этапа {stage_num} для тарифа {tariff_id} пользователем {user_id}")
+        logger.info(f"✅ Сохранен этап {stage_num} для пользователя {user_id}")
         return True
         
     except Exception as e:
@@ -1913,41 +1902,48 @@ async def save_user_stage_choice(user_id: int, tariff_id: str, stage_num: int) -
         return False
 
 
-async def get_user_stage_choice(user_id: int) -> dict:
+async def get_user_selected_stage(user_id: int) -> int:
     """
-    Получает сохраненный выбор этапа пользователя
+    Возвращает выбранный пользователем этап
     
     Returns:
-        Словарь с данными выбора или пустой словарь
+        int: номер этапа (1-10) или 0, если этап не выбран
     """
     try:
         user_data = await get_user(user_id)
         if not user_data:
-            return {}
+            return 0
         
-        return user_data.get('pending_subscription', {})
+        stage = user_data.get('selected_stage')
+        if stage is None:
+            return 0
+        
+        return int(stage) if 1 <= int(stage) <= 10 else 0
         
     except Exception as e:
-        logger.error(f"❌ Ошибка получения выбора этапа: {e}")
-        return {}
-
-
-async def clear_user_stage_choice(user_id: int) -> bool:
+        logger.error(f"❌ Ошибка получения выбранного этапа: {e}")
+        return 0
+    
+async def clear_user_selected_stage(user_id: int) -> bool:
     """
-    Очищает сохраненный выбор этапа после оплаты или отмены
+    Очищает выбранный этап после активации подписки
     """
     try:
         user_data = await get_user(user_id)
         if not user_data:
             return False
         
-        if 'pending_subscription' in user_data:
-            del user_data['pending_subscription']
-            await save_user(user_id, user_data)
-            logger.info(f"✅ Очищен выбор этапа для пользователя {user_id}")
+        if 'selected_stage' in user_data:
+            del user_data['selected_stage']
+        if 'selected_stage_tariff' in user_data:
+            del user_data['selected_stage_tariff']
+        if 'selected_stage_at' in user_data:
+            del user_data['selected_stage_at']
         
+        await save_user(user_id, user_data)
+        logger.info(f"✅ Очищен выбранный этап для пользователя {user_id}")
         return True
         
     except Exception as e:
-        logger.error(f"❌ Ошибка очистки выбора этапа: {e}")
+        logger.error(f"❌ Ошибка очистки выбранного этапа: {e}")
         return False

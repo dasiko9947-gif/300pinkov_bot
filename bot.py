@@ -3164,104 +3164,42 @@ async def process_tariff_selection(callback: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("check_payment_"))
 async def check_payment_handler(callback: CallbackQuery):
-    """Проверка статуса оплаты с безопасной обработкой"""
-    # ПРОВЕРКА ВСЕХ ВОЗМОЖНЫХ None
+    """Проверка статуса оплаты"""
     if not callback or not callback.data:
-        try:
-            await callback.answer("❌ Ошибка данных")
-        except:
-            pass
         return
     
-    payment_id = callback.data.replace("check_payment_", "") if callback.data else ""
-    
-    if not callback.from_user:
-        try:
-            await callback.answer("❌ Ошибка пользователя")
-        except:
-            pass
-        return
-    
-    user = callback.from_user
+    payment_id = callback.data.replace("check_payment_", "")
     
     try:
         await callback.answer("🔄 Проверяем статус платежа...")
         
-        # Проверяем статус платежа
         payment_status = await payments.check_payment_status(payment_id)
         payment_data = await payments.get_payment_data(payment_id)
         
         if not payment_data:
-            await safe_edit_message(callback, "❌ Платеж не найден в базе данных")
+            await safe_edit_message(callback, "❌ Платеж не найден")
             return
         
-        if payment_data['user_id'] != user.id:
+        if payment_data.get('user_id') != callback.from_user.id:
             await safe_edit_message(callback, "❌ Это не ваш платеж")
             return
         
         if payment_status == "succeeded":
+            # Активируем подписку (этап уже будет в payment_data или в данных пользователя)
             await activate_subscription_after_payment(payment_data, callback)
             
         elif payment_status == "pending":
-            check_keyboard = InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(
-                    text="🔄 Проверить еще раз", 
-                    callback_data=f"check_payment_{payment_id}"
-                )
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="🔄 Проверить еще раз", callback_data=f"check_payment_{payment_id}")
             ]])
+            await safe_edit_message(callback, "⏳ Платеж еще обрабатывается...", keyboard)
             
-            await safe_edit_message(
-                callback,
-                "⏳ <b>Платеж еще обрабатывается</b>\n\n"
-                "Обычно это занимает несколько минут.\n"
-                "Попробуйте проверить статус через 2-3 минуты.",
-                check_keyboard
-            )
-            
-        elif payment_status == "canceled":
-            await safe_edit_message(
-                callback,
-                "❌ <b>Платеж отменен</b>\n\n"
-                "Вы можете создать новый платеж или выбрать другой тариф.",
-                keyboards.get_payment_keyboard()
-            )
-            
-        elif payment_status is None:
-            check_keyboard = InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(
-                    text="🔄 Попробовать снова", 
-                    callback_data=f"check_payment_{payment_id}"
-                )
-            ]])
-            
-            await safe_edit_message(
-                callback,
-                "❌ <b>Не удалось проверить статус платежа</b>\n\n"
-                "Попробуйте позже или обратитесь в поддержку.",
-                check_keyboard
-            )
         else:
-            check_keyboard = InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(
-                    text="🔄 Проверить статус", 
-                    callback_data=f"check_payment_{payment_id}"
-                )
-            ]])
-            
-            await safe_edit_message(
-                callback,
-                f"📊 <b>Статус платежа:</b> {payment_status}\n\n"
-                "Продолжайте ожидание или попробуйте проверить позже.",
-                check_keyboard
-            )
+            await safe_edit_message(callback, f"❌ Статус платежа: {payment_status}")
             
     except Exception as e:
         logger.error(f"❌ Ошибка проверки платежа: {e}")
-        await safe_edit_message(
-            callback,
-            "❌ <b>Произошла ошибка при проверке платежа</b>\n\n"
-            "Попробуйте позже или обратитесь в поддержку."
-        )
+        await safe_edit_message(callback, "❌ Ошибка при проверке платежа")
 @dp.callback_query(F.data.startswith("refresh_payment_"))
 async def refresh_payment_handler(callback: CallbackQuery):
     """Обновление страницы оплаты"""
@@ -3344,7 +3282,7 @@ async def back_to_tariffs_handler(callback: CallbackQuery, state: FSMContext):
         await callback.answer("❌ Ошибка")
 
 async def activate_subscription_after_payment(payment_data, callback):
-    """Активация подписки после успешной оплаты с реферальным начислением и немедленной отправкой задания"""
+    """Активация подписки после успешной оплаты с учетом выбранного этапа"""
     if not callback:
         return
         
@@ -3361,15 +3299,30 @@ async def activate_subscription_after_payment(payment_data, callback):
         await callback.answer("❌ Ошибка: пользователь не найден")
         return
     
-    # ОБНОВЛЯЕМ статус платежа
-    await payments.update_payment_status(payment_data['payment_id'], 'succeeded')
+    # ПОЛУЧАЕМ ВЫБРАННЫЙ ЭТАП
+    selected_stage = await utils.get_user_selected_stage(user_id)
     
-    if tariff_id == "pair_year":
-        await activate_pair_subscription(user_data, user_id, tariff, callback)
-        return  # Для парной подписки своя логика
+    # Если этап не выбран, используем этап из платежа
+    if not selected_stage:
+        selected_stage = payment_data.get('selected_stage')
+    
+    # РАССЧИТЫВАЕМ ДЕНЬ СТАРТА В ЗАВИСИМОСТИ ОТ ВЫБРАННОГО ЭТАПА
+    if selected_stage and 1 <= selected_stage <= 10:
+        # Первый день выбранного этапа
+        start_day = (selected_stage - 1) * 30 + 1
+        # Устанавливаем current_day на день перед стартовым (чтобы следующее задание было с нужного дня)
+        user_data['current_day'] = start_day - 1
+        logger.info(f"🎯 Пользователь {user_id} начинает с этапа {selected_stage} (день {start_day})")
+    else:
+        # Если этап не выбран, начинаем с первого дня
+        user_data['current_day'] = 0
+        logger.info(f"🎯 Пользователь {user_id} начинает с первого дня (этап не был выбран)")
     
     # ДОБАВЛЯЕМ ДНИ ПОДПИСКИ
     updated_user_data = await utils.add_subscription_days(user_data, tariff['days'])
+    
+    # ОЧИЩАЕМ ВЫБРАННЫЙ ЭТАП (чтобы не использовать повторно)
+    await utils.clear_user_selected_stage(user_id)
     
     # НАЧИСЛЯЕМ РЕФЕРАЛЬНЫЙ БОНУС
     referral_result = await utils.process_referral_payment(
@@ -3378,16 +3331,12 @@ async def activate_subscription_after_payment(payment_data, callback):
         tariff_id
     )
     
-    # ПРАВИЛЬНО ОБРАБАТЫВАЕМ РЕЗУЛЬТАТ
+    # Обрабатываем результат реферала
     if referral_result and len(referral_result) == 4:
         success, referrer_id, bonus_amount, percent = referral_result
-        
         if success and referrer_id and bonus_amount > 0:
-            # Получаем новый баланс реферера
             referrer_data = await utils.get_user(referrer_id)
             new_balance = referrer_data.get('referral_earnings', 0) if referrer_data else 0
-            
-            # Отправляем уведомление рефереру
             await ReferralNotifications.send_referral_bonus_notification(
                 bot=bot,
                 referrer_id=referrer_id,
@@ -3399,12 +3348,6 @@ async def activate_subscription_after_payment(payment_data, callback):
                     'new_balance': new_balance
                 }
             )
-    else:
-        # Если что-то пошло не так
-        success = False
-        referrer_id = None
-        bonus_amount = 0
-        percent = 0
     
     await utils.save_user(user_id, updated_user_data)
     
@@ -3413,45 +3356,37 @@ async def activate_subscription_after_payment(payment_data, callback):
         f"💎 Тариф: {tariff['name']}\n"
         f"⏰ Срок: {tariff['days']} дней\n"
         f"💰 Стоимость: {tariff['price']} руб.\n"
-        f"🎯 Теперь у вас есть доступ ко всем заданиям!\n\n"
     )
     
-    if success and bonus_amount > 0:
-        success_message += f"🎉 <b>Вы принесли доход своему рефереру: {bonus_amount} руб.!</b>\n\n"
+    if selected_stage:
+        success_message += f"🎯 Выбранный этап: {selected_stage}\n\n"
+    else:
+        success_message += f"🎯 Начинаем с первого этапа!\n\n"
     
-    success_message += f"Задания будут приходить ежедневно в 9:00 🕘\n\n"
+    success_message += f"📋 <b>Твое первое задание придет прямо сейчас!</b>"
     
-    # 🔥 ВАЖНОЕ ДОБАВЛЕНИЕ: НЕМЕДЛЕННАЯ ОТПРАВКА ТЕКУЩЕГО ЗАДАНИЯ
-    success_message += "<b>Твое следующее задание придет прямо сейчас! ⬇️</b>"
+    await safe_edit_message(callback, success_message)
     
-    success_edit = await safe_edit_message(callback, success_message)
-    if not success_edit:
-        await safe_send_message(callback, success_message)
-    
-    # 🔥 КРИТИЧЕСКО ВАЖНО: ОТПРАВЛЯЕМ ЗАДАНИЕ НЕМЕДЛЕННО
+    # ОТПРАВЛЯЕМ ЗАДАНИЕ НЕМЕДЛЕННО
     try:
-        # Получаем следующий день (текущий день + 1)
         current_day = updated_user_data.get('current_day', 0)
         next_day = current_day + 1
         
-        # Если пользователь только начал (день 0), ставим день 1
         if next_day == 0:
             next_day = 1
-            
-        # Получаем задание для следующего дня
+        
+        # Получаем задание для рассчитанного дня
         task_id, task = await utils.get_task_by_day(next_day, updated_user_data.get('archetype', 'spartan'))
         
         if task:
-            # Форматируем сообщение с заданием
             task_message = (
-                f"📋 <b>Новое задание!</b>\n\n"
+                f"📋 <b>Твое первое задание!</b>\n\n"
                 f"<b>День {next_day}/300</b>\n\n"
                 f"{task['text']}\n\n"
                 f"⏰ <b>Выполни задание до 23:59</b>\n\n"
                 f"<i>Отмечай выполнение кнопками ниже 👇</i>"
             )
             
-            # Отправляем задание
             await bot.send_message(
                 chat_id=user_id,
                 text=task_message,
@@ -3459,19 +3394,18 @@ async def activate_subscription_after_payment(payment_data, callback):
                 disable_web_page_preview=True
             )
             
-            # Обновляем данные пользователя
             updated_user_data['last_task_sent'] = datetime.now().isoformat()
             updated_user_data['task_completed_today'] = False
             await utils.save_user(user_id, updated_user_data)
             
-            logger.info(f"✅ Задание дня {next_day} отправлено пользователю {user_id} после активации подписки")
+            logger.info(f"✅ Задание дня {next_day} отправлено пользователю {user_id}")
         else:
             logger.warning(f"⚠️ Не найдено задание дня {next_day} для пользователя {user_id}")
             
     except Exception as e:
-        logger.error(f"❌ Ошибка отправки задания после активации подписки пользователю {user_id}: {e}")
+        logger.error(f"❌ Ошибка отправки задания: {e}")
     
-    # УВЕДОМЛЯЕМ админа об успешной активации
+    # УВЕДОМЛЯЕМ АДМИНА
     try:
         user = callback.from_user
         if user:
@@ -3480,19 +3414,10 @@ async def activate_subscription_after_payment(payment_data, callback):
                 f"👤 Пользователь: {user.first_name} (@{user.username or 'нет'})\n"
                 f"🆔 ID: {user_id}\n"
                 f"💎 Тариф: {tariff['name']}\n"
+                f"🎯 Выбранный этап: {selected_stage if selected_stage else '1'}\n"
                 f"💰 Сумма: {tariff['price']} руб.\n"
                 f"📅 Дней: {tariff['days']}\n"
-                f"⏰ Дата окончания: {updated_user_data.get('subscription_end', 'неизвестно')}\n\n"
             )
-            
-            if success and referrer_id:
-                admin_message += (
-                    f"🤝 <b>Реферальное начисление:</b>\n"
-                    f"• Реферер: {referrer_id}\n"
-                    f"• Бонус: {bonus_amount} руб.\n"
-                    f"• Процент: {percent}%\n"
-                )
-            
             await bot.send_message(config.ADMIN_ID, admin_message)
     except Exception as e:
         logger.error(f"Ошибка уведомления админа: {e}")
@@ -10469,32 +10394,23 @@ async def go_to_subscription_from_stages(callback: CallbackQuery, state: FSMCont
 async def select_stage_for_payment(callback: CallbackQuery, state: FSMContext):
     """
     Выбор этапа и переход к оплате
-    Формат: select_stage_{stage_num}_{tariff_id}
     """
     # Защита от None
-    if callback is None:
+    if not callback or not callback.data:
         return
     
-    if not hasattr(callback, 'data') or callback.data is None:
+    if not callback.message:
         try:
-            await callback.answer("❌ Ошибка данных")
+            await callback.answer("❌ Ошибка: сообщение не найдено")
         except:
             pass
         return
-    
-    if not hasattr(callback, 'from_user') or callback.from_user is None:
-        return
-    
-    message_obj = getattr(callback, 'message', None)
     
     try:
         # Парсим данные
         parts = callback.data.replace("select_stage_", "").split("_")
         if len(parts) < 2:
-            try:
-                await callback.answer("❌ Неверный формат данных")
-            except:
-                pass
+            await callback.answer("❌ Неверный формат данных")
             return
             
         stage_num = int(parts[0])
@@ -10502,110 +10418,60 @@ async def select_stage_for_payment(callback: CallbackQuery, state: FSMContext):
         
         tariff = config.TARIFFS.get(tariff_id)
         if not tariff:
-            try:
-                await callback.answer("❌ Тариф не найден")
-            except:
-                pass
+            await callback.answer("❌ Тариф не найден")
             return
         
         user = callback.from_user
-        user_id = user.id
-        user_data = await utils.get_user(user_id)
-        
-        if not user_data:
-            try:
-                await callback.answer("❌ Сначала зарегистрируйтесь через /start")
-            except:
-                pass
+        if not user:
+            await callback.answer("❌ Ошибка пользователя")
             return
+            
+        user_id = user.id
         
-        # Сохраняем выбор этапа
+        # Сохраняем выбранный этап
         await utils.save_user_stage_choice(user_id, tariff_id, stage_num)
         
-        # Пытаемся создать платеж
-        try:
-            # Проверяем, есть ли модуль payments и функция create_yookassa_payment
-            if not hasattr(payments, 'create_yookassa_payment'):
-                logger.error("❌ Функция create_yookassa_payment не найдена в модуле payments")
-                await callback.answer("❌ Ошибка настройки платежной системы")
-                return
-            
-            description = f"{tariff['name']} (этап {stage_num}) для {user.first_name or user.id}"
-            payment_data = await payments.create_yookassa_payment(
-                amount=tariff['price'],
-                description=description,
-                user_id=user_id,
-                tariff_id=tariff_id
-            )
-            
-            if not payment_data:
-                await callback.answer("❌ Ошибка создания платежа. Попробуйте позже.")
-                return
-            
-            # Формируем сообщение с оплатой
-            message_text = (
-                f"<b>💎 ОПЛАТА ПОДПИСКИ</b>\n\n"
-                f"📦 <b>Тариф:</b> {tariff['name']}\n"
-                f"🎯 <b>Выбранный этап:</b> {stage_num}\n"
-                f"💰 <b>Сумма:</b> {tariff['price']} руб.\n"
-                f"⏰ <b>Срок:</b> {tariff['days']} дней\n\n"
-                f"🔗 <b>Ссылка для оплаты:</b>\n"
-                f"<a href='{payment_data['confirmation_url']}'>Нажмите для перехода к оплате</a>\n\n"
-                f"📱 <b>После оплаты:</b>\n"
-                f"1. Вернитесь в бота\n"
-                f"2. Нажмите кнопку «✅ Проверить оплату» ниже\n"
-                f"3. Подписка активируется автоматически\n"
-                f"4. Задания начнутся с выбранного этапа!\n\n"
-                f"⏳ <b>Платеж действителен 30 минут</b>\n"
-                f"💡 <b>ID платежа:</b> <code>{payment_data['payment_id'][:8]}...</code>"
-            )
-            
-            # Создаем клавиатуру
-            keyboard = InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [InlineKeyboardButton(
-                        text="🔗 Перейти к оплате", 
-                        url=payment_data['confirmation_url']
-                    )],
-                    [InlineKeyboardButton(
-                        text="✅ Проверить оплату", 
-                        callback_data=f"check_payment_{payment_data['payment_id']}"
-                    )],
-                    [InlineKeyboardButton(
-                        text="🔙 Назад к выбору этапа",
-                        callback_data=f"back_to_stages_{tariff_id}"
-                    )]
-                ]
-            )
-            
-            # Отправляем сообщение
-            if message_obj is not None:
-                try:
-                    await message_obj.edit_text(message_text, reply_markup=keyboard)
-                except:
-                    await bot.send_message(
-                        chat_id=user_id,
-                        text=message_text,
-                        reply_markup=keyboard
-                    )
-            else:
-                await bot.send_message(
-                    chat_id=user_id,
-                    text=message_text,
-                    reply_markup=keyboard
-                )
-            
-            await callback.answer("✅ Платеж создан!")
-            
-        except ImportError as e:
-            logger.error(f"❌ Ошибка импорта payments: {e}")
-            await callback.answer("❌ Ошибка платежной системы")
-        except AttributeError as e:
-            logger.error(f"❌ Ошибка атрибута в payments: {e}")
-            await callback.answer("❌ Ошибка платежной системы")
-        except Exception as e:
-            logger.error(f"❌ Ошибка создания платежа: {e}")
-            await callback.answer("❌ Ошибка при создании платежа")
+        # Создаем платеж
+        description = f"{tariff['name']} (этап {stage_num}) для {user.first_name or user.id}"
+        payment_data = await payments.create_yookassa_payment(
+            amount=tariff['price'],
+            description=description,
+            user_id=user_id,
+            tariff_id=tariff_id
+        )
+        
+        if not payment_data:
+            await callback.answer("❌ Ошибка создания платежа")
+            return
+        
+        # Сохраняем этап в данных платежа
+        await payments.update_payment_stage(payment_data['payment_id'], stage_num)
+        
+        message_text = (
+            f"<b>💎 ОПЛАТА ПОДПИСКИ</b>\n\n"
+            f"📦 <b>Тариф:</b> {tariff['name']}\n"
+            f"🎯 <b>Выбранный этап:</b> {stage_num}\n"
+            f"💰 <b>Сумма:</b> {tariff['price']} руб.\n\n"
+            f"🔗 <b>Ссылка для оплаты:</b>\n"
+            f"<a href='{payment_data['confirmation_url']}'>Нажмите для перехода к оплате</a>\n\n"
+            f"⏳ <b>Платеж действителен 30 минут</b>"
+        )
+        
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="🔗 Перейти к оплате", url=payment_data['confirmation_url'])],
+                [InlineKeyboardButton(text="✅ Проверить оплату", callback_data=f"check_payment_{payment_data['payment_id']}")]
+            ]
+        )
+        
+        # Проверяем существование message перед вызовом edit_text
+        if callback.message:
+            await callback.message.edit_text(message_text, reply_markup=keyboard)
+        else:
+            # Если сообщения нет, отправляем новое
+            await bot.send_message(chat_id=user_id, text=message_text, reply_markup=keyboard)
+        
+        await callback.answer("✅ Платеж создан!")
         
     except Exception as e:
         logger.error(f"❌ Ошибка в select_stage_for_payment: {e}")
@@ -10613,7 +10479,6 @@ async def select_stage_for_payment(callback: CallbackQuery, state: FSMContext):
             await callback.answer("❌ Ошибка")
         except:
             pass
-
 @dp.callback_query(F.data.startswith("tariff_with_stage_"))
 async def process_tariff_with_stage_selection(callback: CallbackQuery, state: FSMContext):
     """

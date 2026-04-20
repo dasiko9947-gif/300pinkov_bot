@@ -21,7 +21,7 @@ INVITE_CODES_FILE = BASE_DIR / 'invite_codes.json'
 
 # Тарифы
 TARIFFS = {
-    "month": {"name": "Месячная подписка", "price": 300, "days": 30},  # 30 дней, а не 31
+    "month": {"name": "Месячная подписка", "price": 3, "days": 30},  # 30 дней, а не 31
     "year": {"name": "Годовая подписка", "price": 3000, "days": 365},
     "pair_year": {"name": "👥 Парная годовая", "price": 5000, "days": 365},
 }
