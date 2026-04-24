@@ -56,6 +56,8 @@ class UserStates(StatesGroup):
     waiting_for_invite = State()
     waiting_for_timezone = State()
     waiting_for_ready = State()
+    waiting_for_subscription_check = State()
+    waiting_for_channel_subscription = State()
     # Новые состояния для вывода
     waiting_for_withdrawal_amount = State()
     waiting_for_withdrawal_method = State()
@@ -75,6 +77,7 @@ class UserStates(StatesGroup):
     admin_waiting_mass_photo = State()
     admin_viewing_mass_history = State()
 
+   
 
 class ReferralNotifications:
     """Класс для уведомлений реферальной системы"""
@@ -661,7 +664,7 @@ async def safe_send_message_optimized(user_id: int, text: str, **kwargs):
         return False
 
 async def check_trial_expiry():
-    """Проверяет и уведомляет пользователей об окончании пробного периода с кнопкой подписки"""
+    """Проверяет и уведомляет пользователей об окончании пробного периода"""
     logger.info("🔔 Проверяем окончание пробного периода...")
     
     users = await utils.get_all_users()
@@ -671,41 +674,37 @@ async def check_trial_expiry():
         try:
             user_id = int(user_id_str)
             
-            # Пропускаем пользователей с активной подпиской
             if await utils.is_subscription_active(user_data):
                 continue
             
-            # Проверяем, закончился ли пробный период
             created_at = datetime.fromisoformat(user_data.get('created_at', datetime.now().isoformat()))
             days_passed = (datetime.now() - created_at).days
             
-            # Если прошло ровно 3 дня - пробный период закончился
-            if days_passed == 3:
-                from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-                
-                # Создаем клавиатуру с кнопкой подписки
+            # Если прошло ровно TRIAL_DAYS дней - пробный период закончился
+            if days_passed == config.TRIAL_DAYS:
                 subscription_keyboard = InlineKeyboardMarkup(
                     inline_keyboard=[
                         [InlineKeyboardButton(
-                            text="💎 Активировать подписку", 
+                            text="💎 СТАТЬ ВОИНОМ ИМПЕРИИ", 
                             callback_data="activate_subscription_after_trial"
                         )],
                         [InlineKeyboardButton(
-                            text="📊 Мой прогресс", 
+                            text="📊 МОЙ ПРОГРЕСС", 
                             callback_data="show_progress_after_trial"
                         )]
                     ]
                 )
                 
                 message_text = (
-                    "🎯 <b>Ты прошел вводный этап!</b>\n\n"
-                    "За 3 дня ты получил представление о том, как работает система «300 ПИНКОВ».\n\n"
-                    "💪 <b>Что дальше?</b>\n"
-                    "• Ежедневные задания для развития силы воли\n"
-                    "• Система рангов и достижений\n" 
-                    "• Поддержка комьюнити\n"
-                    "• 297 дней роста впереди!\n\n"
-                    "🔥 <b>Продолжи путь к сильной версии себя!</b>"
+                    "🏆 <b>ПОЗДРАВЛЯЮ, ПУТНИК!</b> 🏆\n\n"
+                    f"Ты выдержал {config.TRIAL_DAYS} дней испытаний и доказал свою преданность Империи!\n\n"
+                    "⚔️ <b>НО ЭТО ТОЛЬКО НАЧАЛО!</b>\n\n"
+                    "Что ждёт настоящего воина:\n"
+                    "• Ежедневные ПИНКИ для прокачки силы воли\n"
+                    "• Система рангов: от Путника до Спартанца\n"
+                    "• Элитное сообщество воинов\n"
+                    f"• {300 - config.TRIAL_DAYS} дней величия впереди!\n\n"
+                    "🔥 <b>ГОТОВ ЛИ ТЫ СТАТЬ ЛЕГЕНДОЙ?</b>"
                 )
                 
                 success = await safe_send_message(
@@ -722,7 +721,6 @@ async def check_trial_expiry():
             logger.error(f"❌ Ошибка уведомления пользователя {user_id_str}: {e}")
     
     logger.info(f"📊 Уведомления отправлены: {notified_count} пользователям")
-
 # В функции send_reminders обновим логику:
 
 async def send_reminders():
@@ -871,149 +869,175 @@ def cleanup_old_backups(backup_dir, hours=24):
 
 @dp.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
-    """Обработчик команды /start с реферальной системой - ПЕРЕПИСАННАЯ"""
+    """Начало регистрации"""
     try:
-        # Проверяем наличие пользователя
         user = message.from_user
         if not user:
-            logger.error("❌ cmd_start: Не удалось получить информацию о пользователе")
-            await message.answer("Ошибка: не удалось получить информацию о пользователе")
             return
         
-        # Логируем начало регистрации
-        logger.info(f"🚀 Начало регистрации: {user.id} (@{user.username or 'нет'}) - {user.first_name}")
-        
-        # Получаем аргументы команды /start
-        args = message.text.split() if message.text else []
-        referrer_id = None
-        
-        # Проверяем реферальный ID (если есть в аргументах)
-        if len(args) > 1:
-            try:
-                referrer_id = int(args[1])
-                logger.info(f"📝 Реферальный переход: {user.id} -> от {referrer_id}")
-                
-                # Проверяем, что реферер существует и не является самим пользователем
-                if referrer_id == user.id:
-                    logger.warning(f"⚠️ Пользователь {user.id} пытается пригласить себя")
-                    referrer_id = None
-                else:
-                    # Проверяем существование реферера
-                    referrer_data = await utils.get_user(referrer_id)
-                    if not referrer_data:
-                        logger.warning(f"⚠️ Реферер {referrer_id} не найден в базе")
-                        referrer_id = None
-                        
-            except ValueError as e:
-                logger.warning(f"⚠️ Неверный реферальный ID '{args[1]}': {e}")
-                referrer_id = None
-        
-        # Очищаем состояние FSM
-        try:
-            await state.clear()
-        except Exception as e:
-            logger.warning(f"⚠️ Ошибка очистки состояния: {e}")
-        
-        # Проверяем, есть ли уже пользователь в базе
+        # Проверяем есть ли пользователь
         user_data = await utils.get_user(user.id)
         
         if user_data:
-            # ✅ ПОЛЬЗОВАТЕЛЬ УЖЕ ЗАРЕГИСТРИРОВАН
-            
-            # Получаем гендерные окончания
-            gender = await utils.get_gender_ending(user_data)
-            welcome_name = user.first_name or "Путник"
-            
-            # Получаем случайную реплику приветствия
-            greeting = await BotReplies.get_welcome_back_reply(gender, welcome_name)
-            
-            # Проверяем и восстанавливаем реферальную связь если нужно
-            if referrer_id and not user_data.get('invited_by'):
-                success = await utils.save_referral_relationship(user.id, referrer_id)
-                if success:
-                    logger.info(f"✅ Восстановлена реферальная связь: {user.id} -> {referrer_id}")
-            
-            # Обновляем активность
-            await utils.update_user_activity(user.id)
-            
-            # Отправляем приветствие
+            # Уже зарегистрирован
             await message.answer(
-                greeting,
-                reply_markup=keyboards.get_main_menu(user.id),
-                disable_web_page_preview=True
+                "С возвращением!",
+                reply_markup=keyboards.get_main_menu(user.id)
             )
-            
-            logger.info(f"✅ Возврат пользователя {user.id} в систему")
-            
-        else:
-            # ❌ НОВЫЙ ПОЛЬЗОВАТЕЛЬ - начинаем регистрацию
-            
-            logger.info(f"👤 Новый пользователь: {user.id} (@{user.username or 'нет'})")
-            
-            # Приветственное сообщение
-            await message.answer(
-                "👋 <b>Приветствую, путник!</b>\n\n"
-                "• 300 ПИНКОВ — это система, которая заставляет мозг и тело работать по-новому.\n\n"
-                
-                "🎯 <b>Что тебя ждет:</b>\n"
-                "• Ежедневные задания\n"
-                "• 300 дней непрерывного роста\n"
-                "• Система рангов и привилегий\n\n"
-                
-                "💪 <b>Как это работает:</b>\n"
-                "• В 9:00 — получаешь ПИНОК\n"
-                "• До 23:59 — выполняешь\n"
-                "• Честность = прогресс\n\n"
-                
-                "⬇️ <b>Давай настроим твой челлендж!</b>",
-                reply_markup=ReplyKeyboardMarkup(
-                    keyboard=[[KeyboardButton(text="➡️ Продолжить настройку")]],
-                    resize_keyboard=True,
-                    one_time_keyboard=True
-                ),
-                disable_web_page_preview=True
-            )
-            
-            # Сохраняем реферальный ID в состоянии
-            if referrer_id:
-                await state.update_data(referrer_id=referrer_id)
-                logger.info(f"📝 Сохранен реферальный ID {referrer_id} для пользователя {user.id}")
-            
-            # Переходим к выбору часового пояса
-            await state.set_state(UserStates.waiting_for_timezone)
-            logger.info(f"📋 Пользователь {user.id} перешел к выбору часового пояса")
-            
+            return
+        
+        # Новая регистрация - начинаем с часового пояса
+        await state.set_state(UserStates.waiting_for_timezone)
+        
+        await message.answer(
+            "🕐 <b>Выбери свой часовой пояс:</b>\n\n"
+            "ПИНОК будет приходить ровно в 9:00 по твоему времени.",
+            reply_markup=keyboards.get_timezone_keyboard()
+        )
+        
     except Exception as e:
-        logger.error(f"❌ Критическая ошибка в cmd_start: {e}", exc_info=True)
-        
-        # Отправляем сообщение об ошибке
+        logger.error(f"❌ Ошибка в cmd_start: {e}")
+
+@dp.callback_query(lambda c: c.data == "check_subscription")
+async def check_subscription_handler(callback: CallbackQuery, state: FSMContext):
+    """Проверяет подписку пользователя на канал"""
+    # ========== ЗАЩИТА ОТ None ==========
+    if callback is None:
+        logger.error("❌ check_subscription_handler: callback is None")
+        return
+    
+    if callback.from_user is None:
+        logger.error("❌ check_subscription_handler: callback.from_user is None")
+        return
+    
+    user = callback.from_user
+    user_id = user.id
+    
+    # ========== ЗАЩИТА ПРИ ОТСУТСТВИИ MESSAGE ==========
+    if callback.message is None:
+        logger.error(f"❌ check_subscription_handler: callback.message is None for user {user_id}")
+        # Пытаемся отправить новое сообщение вместо редактирования
         try:
-            await message.answer(
-                "❌ <b>Произошла ошибка при запуске</b>\n\n"
-                "Попробуйте снова через несколько минут.\n"
-                "Если проблема повторяется, обратитесь в поддержку.",
-                reply_markup=ReplyKeyboardRemove()
+            channel_keyboard = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(
+                        text="📢 ПОДПИСАТЬСЯ НА КАНАЛ",
+                        url=config.CHANNEL_LINK
+                    )],
+                    [InlineKeyboardButton(
+                        text="✅ Я ПОДПИСАЛСЯ",
+                        callback_data="check_subscription"
+                    )]
+                ]
+            )
+            
+            await bot.send_message(
+                chat_id=user_id,
+                text="⚠️ <b>ПРОВЕРКА ПОДПИСКИ</b>\n\n"
+                     "Пожалуйста, подпишитесь на канал и нажмите кнопку:",
+                reply_markup=channel_keyboard
+            )
+        except Exception as e:
+            logger.error(f"❌ Не удалось отправить сообщение: {e}")
+        
+        try:
+            await callback.answer()
+        except:
+            pass
+        return
+    
+    # Проверяем подписку (используем utils.)
+    is_subscribed = await utils.check_channel_subscription(bot, user_id)
+    
+    if is_subscribed:
+        # ✅ Пользователь подписан - продолжаем регистрацию
+        
+        # Безопасное редактирование сообщения
+        try:
+            await callback.message.edit_text(
+                "✅ <b>Отлично! Ты доказал свою верность Империи!</b>\n\n"
+                "⚔️ Теперь настало время выбрать свой путь воина.\n"
+                "Каждый великий воин начинал с выбора...",
+                reply_markup=None
+            )
+        except Exception as e:
+            logger.error(f"Ошибка редактирования сообщения: {e}")
+            # Если не удалось отредактировать, отправляем новое
+            await callback.message.answer(
+                "✅ <b>Отлично! Ты доказал свою верность Империи!</b>\n\n"
+                "⚔️ Теперь настало время выбрать свой путь воина.\n"
+                "Каждый великий воин начинал с выбора..."
+            )
+        
+        # Переходим к выбору часового пояса
+        await state.set_state(UserStates.waiting_for_timezone)
+        
+        # Отправляем сообщение с выбором часового пояса
+        await callback.message.answer(
+            "🕐 <b>Выбери свой часовой пояс:</b>\n\n"
+            "ПИНОК придёт ровно в 9:00 по твоему местному времени.\n"
+            "Дисциплина не терпит опозданий!",
+            reply_markup=keyboards.get_timezone_keyboard()
+        )
+        
+        # Безопасный answer
+        try:
+            await callback.answer("✅ Подписка подтверждена! Продолжаем регистрацию.")
+        except:
+            pass
+        
+    else:
+        # ❌ Пользователь не подписан - показываем предупреждение
+        channel_keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(
+                    text="📢 ПОДПИСАТЬСЯ НА КАНАЛ",
+                    url=config.CHANNEL_LINK
+                )],
+                [InlineKeyboardButton(
+                    text="✅ Я ПОДПИСАЛСЯ",
+                    callback_data="check_subscription"
+                )]
+            ]
+        )
+        
+        # Безопасный answer с предупреждением
+        try:
+            await callback.answer(
+                "❌ Ты ещё не подписан на канал!\n"
+                "Подпишись и нажми кнопку снова.",
+                show_alert=True
             )
         except:
             pass
         
-        # Очищаем состояние
+        # Безопасное редактирование сообщения
         try:
-            await state.clear()
-        except:
-            pass
-      
+            await callback.message.edit_text(
+                "⚠️ <b>ВНИМАНИЕ, ПУТНИК!</b> ⚠️\n\n"
+                "Ты не выполнил указ Императора!\n\n"
+                "🏛️ <b>Без подписки на Имперский канал доступ в Легион ЗАПРЕЩЁН!</b>\n\n"
+                "🔗 <b>Присоединяйся сейчас:</b>\n"
+                f"{config.CHANNEL_LINK}\n\n"
+                "⚔️ <b>Помни:</b> Только вместе мы сила! Только дисциплина ведёт к победе!\n\n"
+                "✅ <b>После подписки нажми кнопку «Я ПОДПИСАЛСЯ»</b>",
+                reply_markup=channel_keyboard
+            )
+        except Exception as e:
+            logger.error(f"Ошибка редактирования сообщения: {e}")
+            # Если не удалось отредактировать, отправляем новое
+            try:
+                await callback.message.answer(
+                    "⚠️ <b>ВНИМАНИЕ, ПУТНИК!</b> ⚠️\n\n"
+                    "Ты не выполнил указ Императора!\n\n"
+                    "🏛️ <b>Без подписки на Имперский канал доступ в Легион ЗАПРЕЩЁН!</b>\n\n"
+                    f"🔗 <b>Присоединяйся сейчас:</b> {config.CHANNEL_LINK}\n\n"
+                    "✅ <b>После подписки нажми кнопку «Я ПОДПИСАЛСЯ»</b>",
+                    reply_markup=channel_keyboard
+                )
+            except Exception as e2:
+                logger.error(f"Ошибка отправки сообщения: {e2}")
 
-@dp.message(UserStates.waiting_for_timezone, F.text == "➡️ Продолжить настройку")
-async def process_timezone_step(message: Message, state: FSMContext):
-    """ШАГ 2: Выбор часового пояса"""
-    from keyboards import get_timezone_keyboard
-    
-    await message.answer(
-        "🕐 <b>Выбери свой часовой пояс:</b>\n\n"
-        "ПИНОК придёт ровно в 9:00 по твоему местному времени.",
-        reply_markup=get_timezone_keyboard()
-    )
 
 @dp.message(UserStates.waiting_for_timezone)
 async def process_timezone_selection(message: Message, state: FSMContext):
@@ -1333,30 +1357,34 @@ async def process_ready_confirmation(message: Message, state: FSMContext):
             pass
 @dp.message(UserStates.waiting_for_archetype)
 async def process_archetype(message: Message, state: FSMContext):
-    """Обработка выбора архетипа - ЗАДАНИЕ СРАЗУ ПОСЛЕ ВЫБОРА"""
+    """Выбор архетипа - после этого проверяем подписку"""
     try:
-        if not message or not message.from_user:
-            await message.answer("Ошибка: не удалось получить информацию о пользователе")
+        # ПРОВЕРКА НА None
+        if not message:
             return
-            
+        
+        if not message.from_user:
+            return
+        
         if not message.text:
-            await message.answer("Пожалуйста, выбери архетип с клавиатуры:")
+            await message.answer("❌ Пожалуйста, выбери путь с клавиатуры:")
             return
-            
+        
         archetype_map = {
-            "⚔️ спартанец": "spartan",
-            "🛡️ амазонка": "amazon"
+            "спартанец": "spartan",
+            "амазонка": "amazon"
         }
         
         archetype = None
-        text_lower = message.text.lower()
+        text_lower = message.text.lower()  # ТЕПЕРЬ message.text точно не None
+        
         for key, value in archetype_map.items():
             if key in text_lower:
                 archetype = value
                 break
         
         if not archetype:
-            await message.answer("Пожалуйста, выбери архетип с клавиатуры:")
+            await message.answer("❌ Пожалуйста, выбери путь с клавиатуры:")
             return
         
         user = message.from_user
@@ -1364,163 +1392,259 @@ async def process_archetype(message: Message, state: FSMContext):
         
         logger.info(f"✅ Пользователь {user_id} выбрал архетип: {archetype}")
         
-        # Получаем все сохраненные данные из состояния
-        user_data = await state.get_data()
-        timezone = user_data.get('timezone', 'Europe/Moscow')
-        referrer_id = user_data.get('referrer_id')
+        # Сохраняем архетип и получаем данные из состояния
+        state_data = await state.get_data()
+        timezone = state_data.get('timezone', 'Europe/Moscow')
+        referrer_id = state_data.get('referrer_id')
         
-        # ========== СОЗДАЕМ ПОЛЬЗОВАТЕЛЯ ==========
-        new_user_data = {
-            "user_id": user_id,
-            "username": user.username or "",
-            "first_name": user.first_name or "",
-            "last_name": user.last_name or "",
-            "archetype": archetype,
-            "timezone": timezone,
-            "current_day": 0,
-            "completed_tasks": 0,
-            "rank": "putnik",
-            "created_at": datetime.now().isoformat(),
-            "referrals": [],
-            "referral_earnings": 0,
-            "last_task_sent": None,
-            "task_completed_today": False,
-            "debts": [],
-            "last_activity": datetime.now().isoformat(),
-            "invited_by": referrer_id,
-            "reserved_for_withdrawal": 0,
-            "referral_stats": {
-                "total_earned": 0,
-                "payments_count": 0,
-                "last_payment": None
-            },
-            "completed_tasks_in_trial": 0,
-            "trial_finished": False
-        }
+        # Сохраняем данные в состояние для финальной регистрации
+        await state.update_data(
+            archetype=archetype,
+            timezone=timezone,
+            referrer_id=referrer_id,
+            user_id=user_id,
+            username=user.username or "",
+            first_name=user.first_name or "",
+            last_name=user.last_name or ""
+        )
         
-        # Сохраняем пользователя
-        try:
-            users = await utils.atomic_read_json(config.USERS_FILE)
-            if not isinstance(users, dict):
-                users = {}
-            users[str(user_id)] = new_user_data
-            await utils.atomic_write_json(config.USERS_FILE, users)
-            logger.info(f"💾 Пользователь {user_id} сохранен в базу")
-        except Exception as e:
-            logger.error(f"❌ Ошибка сохранения пользователя {user_id}: {e}")
-            await message.answer("❌ Ошибка регистрации. Попробуйте позже.")
-            await state.clear()
-            return
-        
-        # Сохраняем реферальную связь
-        if referrer_id:
-            success = await utils.save_referral_relationship(user_id, referrer_id)
-            if success:
-                logger.info(f"✅ Реферальная связь сохранена: {user_id} -> {referrer_id}")
-                try:
-                    referrer_name = new_user_data.get('first_name', 'Новый пользователь')
-                    welcome_msg = (
-                        f"🎉 <b>Новый реферал!</b>\n\n"
-                        f"По твоей ссылке присоединился {referrer_name}!\n"
-                        f"Когда он оплатит подписку - ты получишь бонус!"
-                    )
-                    await bot.send_message(referrer_id, welcome_msg)
-                except Exception as e:
-                    logger.error(f"⚠️ Не удалось уведомить реферера {referrer_id}: {e}")
-        
-        # ========== ОТПРАВЛЯЕМ ПРИВЕТСТВИЕ И ПЕРВОЕ ЗАДАНИЕ ==========
-        
-        # Приветствие в зависимости от архетипа
+        # Определяем обращение в зависимости от архетипа
         if archetype == "spartan":
-            welcome_message = (
-                "🎯 <b>ПУТЬ СПАРТАНЦА ВЫБРАН</b>\n\n"
-            )
+            address = "Спартанец"
+            pronoun = "воин"
         else:
-            welcome_message = (
-                "🎯 <b>ПУТЬ АМАЗОНКИ ВЫБРАН</b>\n\n"
-            )
+            address = "Амазонка"
+            pronoun = "воительница"
         
-        # Получаем первое задание
-        try:
-            task_id, task = await utils.get_task_by_day(1, archetype)
-            
-            if task:
-                gender_ending = "ТВОЕ" if archetype == "spartan" else "ТВОЁ"
-                
-                task_message = (
-                    f"{welcome_message}"
-                    f"<b>{gender_ending} ПЕРВОЕ ЗАДАНИЕ!</b>\n\n"
-                    f"<b>День 1/300</b>\n\n"
-                    f"{task['text']}\n\n"
-                    f"⏰ Выполни задание до 23:59\n\n"
-                    f"<i>Отмечай выполнение кнопками 👇</i>"
-                )
-                
-                await message.answer(
-                    task_message,
-                    reply_markup=keyboards.task_keyboard,
-                    disable_web_page_preview=True
-                )
-                
-                # Обновляем данные пользователя
-                new_user_data['last_task_sent'] = datetime.now().isoformat()
-                new_user_data['task_completed_today'] = False
-                await utils.save_user(user_id, new_user_data)
-                
-                logger.info(f"✅ Первое задание отправлено пользователю {user_id}")
-                
-            else:
-                # Если задание не найдено
-                await message.answer(
-                    f"{welcome_message}"
-                    "К сожалению, первое задание временно недоступно.\n"
-                    "Мы уже работаем над решением проблемы.\n\n"
-                    "А пока можешь ознакомиться с функциями бота:",
-                    reply_markup=keyboards.get_main_menu(user_id)
-                )
-                logger.warning(f"⚠️ Не найдено задание дня 1 для пользователя {user_id}")
-                
-        except Exception as e:
-            logger.error(f"❌ Ошибка отправки задания: {e}")
-            await message.answer(
-                f"{welcome_message}"
-                "Произошла ошибка при загрузке задания.\n"
-                "Попробуй обновить меню через кнопку 'Задание на сегодня'.",
-                reply_markup=keyboards.get_main_menu(user_id)
-            )
+        # Клавиатура для подписки
+        channel_keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(
+                    text="📢 ВСТУПИТЬ В ЛЕГИОН",
+                    url=config.CHANNEL_LINK
+                )],
+                [InlineKeyboardButton(
+                    text="✅ Я ПОДПИСАЛСЯ",
+                    callback_data="finalize_registration"
+                )]
+            ]
+        )
         
-        # Обновляем активность
-        await utils.update_user_activity(user_id)
+        await message.answer(
+            f"📜 <b>Указ Императора:</b>\n"
+
+            f"Вступи в Имперский Легион — получи 7 дней БЕСПЛАТНОГО доступа к системе!\n\n"
+            f"🔗 <b>Присоединяйся к Легиону:</b>\n"
+            f"{config.CHANNEL_LINK}\n\n"
+            f"✅ <b>После подписки нажми кнопку «Я ПОДПИСАЛСЯ»</b>",
+            reply_markup=channel_keyboard,
+            disable_web_page_preview=False
+        )
         
-        # Очищаем состояние
-        await state.clear()
-        
-        logger.info(f"✅ Регистрация пользователя {user_id} завершена успешно")
-        
-        # Уведомляем админа
-        try:
-            admin_message = (
-                f"👤 <b>НОВЫЙ ПОЛЬЗОВАТЕЛЬ</b>\n\n"
-                f"📛 {user.first_name} (@{user.username or 'нет'})\n"
-                f"🆔 {user_id}\n"
-                f"🎯 Архетип: {'🛡️ Спартанец' if archetype == 'spartan' else '⚔️ Амазонка'}\n"
-                f"🕐 Часовой пояс: {timezone}\n"
-                f"🤝 Реферер: {referrer_id if referrer_id else 'нет'}"
-            )
-            await bot.send_message(config.ADMIN_ID, admin_message)
-        except Exception as e:
-            logger.error(f"⚠️ Не удалось уведомить админа: {e}")
+        await state.set_state(UserStates.waiting_for_channel_subscription)
         
     except Exception as e:
-        logger.error(f"❌ Критическая ошибка в process_archetype: {e}", exc_info=True)
+        logger.error(f"❌ Ошибка в process_archetype: {e}")
+        await message.answer("❌ Произошла ошибка. Попробуйте позже.")
+        await state.clear()
+
+@dp.callback_query(UserStates.waiting_for_channel_subscription, F.data == "finalize_registration")
+async def finalize_registration_handler(callback: CallbackQuery, state: FSMContext):
+    """Финальная регистрация после подтверждения подписки"""
+    # ПРОВЕРКА НА None
+    if not callback:
+        return
+    
+    if not callback.from_user:
+        return
+    
+    if not callback.message:
+        # Если нет сообщения, отправляем новое
         try:
-            await message.answer(
-                "❌ <b>Произошла ошибка при регистрации</b>\n\n"
-                "Пожалуйста, попробуй снова через /start"
+            await bot.send_message(
+                chat_id=callback.from_user.id,
+                text="❌ Ошибка: сообщение не найдено. Нажми /start заново."
             )
         except:
             pass
         await state.clear()
+        return
+    
+    user = callback.from_user
+    user_id = user.id
+    
+    # Проверяем подписку на канал
+    is_subscribed = await utils.check_channel_subscription(bot, user_id)
+    
+    if not is_subscribed:
+        try:
+            await callback.answer(
+                "❌ Ты ещё не вступил в Легион!\n"
+                "Подпишись на канал и нажми кнопку снова.",
+                show_alert=True
+            )
+        except:
+            pass
+        return
+    
+    # Получаем данные из состояния
+    state_data = await state.get_data()
+    
+    # Формируем данные пользователя
+    new_user_data = {
+        "user_id": user_id,
+        "username": state_data.get('username', ''),
+        "first_name": state_data.get('first_name', ''),
+        "last_name": state_data.get('last_name', ''),
+        "archetype": state_data.get('archetype', 'spartan'),
+        "timezone": state_data.get('timezone', 'Europe/Moscow'),
+        "current_day": 0,
+        "completed_tasks": 0,
+        "rank": "putnik",
+        "created_at": datetime.now().isoformat(),
+        "referrals": [],
+        "referral_earnings": 0,
+        "last_task_sent": None,
+        "task_completed_today": False,
+        "debts": [],
+        "last_activity": datetime.now().isoformat(),
+        "invited_by": state_data.get('referrer_id'),
+        "reserved_for_withdrawal": 0,
+        "completed_tasks_in_trial": 0,
+        "trial_finished": False
+    }
+    
+    # Сохраняем пользователя
+    await utils.save_user(user_id, new_user_data)
+    
+    # Сохраняем реферальную связь
+    referrer_id = state_data.get('referrer_id')
+    if referrer_id:
+        await utils.save_referral_relationship(user_id, referrer_id)
+        
+        # Уведомляем реферера
+        try:
+            welcome_msg = (
+                f"🎉 <b>Новый реферал!</b>\n\n"
+                f"По твоей ссылке присоединился {new_user_data.get('first_name', 'Новый воин')}!\n"
+                f"Когда он оплатит подписку - ты получишь бонус!"
+            )
+            await bot.send_message(referrer_id, welcome_msg)
+        except Exception as e:
+            logger.error(f"Ошибка уведомления реферера: {e}")
+    
+    # Определяем приветствие в зависимости от архетипа
+    archetype = state_data.get('archetype', 'spartan')
+    
+    if archetype == "spartan":
+        welcome_title = "Спартанец"
+        welcome_text = (
+            "Ты выбрал путь силы и дисциплины.\n\n"
+        )
+    else:
+        welcome_title = "Амазонка"
+        welcome_text = (
+            "Ты выбрала путь гармонии и внутренней силы.\n\n"
+        )
+    
+    # Отправляем приветствие (с проверкой на существование message)
+    try:
+        await callback.message.delete()
+    except Exception as e:
+        logger.error(f"Ошибка удаления сообщения: {e}")
+    
+    try:
+        await callback.message.answer(
+            f"🎯 <b>Добро пожаловать, {welcome_title}!</b>\n\n"
+            f"{welcome_text}"
+            f"🎁 <b>Твой бонус:</b> 7 дней БЕСПЛАТНОГО пробного периода!\n\n"
+            f"⬇️ <b>Твоё первое задание:</b>",
+            reply_markup=None
+        )
+    except Exception as e:
+        logger.error(f"Ошибка отправки приветствия: {e}")
+        # Пробуем отправить новое сообщение
+        try:
+            await bot.send_message(
+                chat_id=user_id,
+                text=f"🎯 <b>Добро пожаловать, {welcome_title}!</b>\n\n"
+                     f"{welcome_text}"
+                     f"🎁 <b>Твой бонус:</b> 7 дней БЕСПЛАТНОГО пробного периода!\n\n"
+                     f"⬇️ <b>Твоё первое задание:</b>"
+            )
+        except:
+            pass
+    
+    # Отправляем первое задание
+    try:
+        task_id, task = await utils.get_task_by_day(1, archetype)
+        
+        if task:
+            task_message = (
+                f"📋 <b>День 1/300</b>\n\n"
+                f"{task['text']}\n\n"
+                f"⏰ Выполни задание до 23:59\n\n"
+                f"<i>Отмечай выполнение кнопками ниже 👇</i>"
+            )
+            
+            await callback.message.answer(
+                task_message,
+                reply_markup=keyboards.task_keyboard,
+                disable_web_page_preview=True
+            )
+            
+            # Обновляем данные
+            new_user_data['last_task_sent'] = datetime.now().isoformat()
+            new_user_data['task_completed_today'] = False
+            await utils.save_user(user_id, new_user_data)
+            
+            logger.info(f"✅ Первое задание отправлено пользователю {user_id}")
+        else:
+            await callback.message.answer(
+                "❌ Задание временно недоступно. Попробуй позже."
+            )
+            
+    except Exception as e:
+        logger.error(f"❌ Ошибка отправки задания: {e}")
+        try:
+            await callback.message.answer(
+                "❌ Ошибка загрузки задания. Попробуй нажать 'Задание на сегодня' в меню."
+            )
+        except:
+            pass
+    
+    # Показываем главное меню
+    try:
+        await callback.message.answer(
+            "📋 <b>Тебе доступны все функции бота!</b>\n\n"
+            "Используй меню ниже для навигации:",
+            reply_markup=keyboards.get_main_menu(user_id)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка отправки меню: {e}")
+    
+    # Очищаем состояние
+    await state.clear()
+    
+    # Уведомляем админа
+    try:
+        admin_message = (
+            f"👤 <b>НОВЫЙ ПОЛЬЗОВАТЕЛЬ</b>\n\n"
+            f"📛 {user.first_name} (@{user.username or 'нет'})\n"
+            f"🆔 {user_id}\n"
+            f"🎯 Путь: {'⚔️ Спартанец' if archetype == 'spartan' else '🛡️ Амазонка'}\n"
+            f"🕐 Часовой пояс: {state_data.get('timezone', 'Europe/Moscow')}\n"
+            f"🤝 Реферер: {referrer_id if referrer_id else 'нет'}"
+        )
+        await bot.send_message(config.ADMIN_ID, admin_message)
+    except Exception as e:
+        logger.error(f"Ошибка уведомления админа: {e}")
+    
+    # Безопасный ответ на callback
+    try:
+        await callback.answer("✅ Добро пожаловать в Империю!")
+    except:
+        pass
 # ========== РАЗНООБРАЗНЫЕ РЕПЛИКИ БОТА ==========
 
 class BotReplies:
@@ -2443,6 +2567,7 @@ async def show_referral_from_legion(callback: CallbackQuery):
 
 @dp.message(F.text == "✅ ГОТОВО")
 async def task_completed(message: Message):
+    """Обработчик выполнения задания - ПОЛНОСТЬЮ ИСПРАВЛЕННЫЙ"""
     user = message.from_user
     if not user:
         return
@@ -2451,6 +2576,7 @@ async def task_completed(message: Message):
     user_data = await utils.get_user(user_id)
     
     if not user_data:
+        await message.answer("❌ Сначала зарегистрируйся через /start")
         return
     
     # 🔥 Сбрасываем флаг блокировки за вчерашнее задание
@@ -2461,10 +2587,9 @@ async def task_completed(message: Message):
     # Сохраняем старый ранг для сравнения
     old_rank = user_data.get('rank', 'putnik')
     
-    # Получаем гендерные окончания - БЕЗОПАСНАЯ ВЕРСИЯ
+    # Получаем гендерные окончания
     try:
         gender = await utils.get_gender_ending(user_data)
-        # Проверяем наличие ключей
         if 'verb_finished' not in gender:
             gender['verb_finished'] = 'завершил' if user_data.get('archetype', 'spartan') == 'spartan' else 'завершила'
         if 'ending_a' not in gender:
@@ -2475,7 +2600,6 @@ async def task_completed(message: Message):
             gender['ending_te'] = '' if user_data.get('archetype', 'spartan') == 'spartan' else 'а'
     except Exception as e:
         logger.error(f"❌ Ошибка получения гендерных окончаний: {e}")
-        # Значения по умолчанию
         gender = {
             'verb_finished': 'завершил',
             'ending_a': '',
@@ -2494,25 +2618,6 @@ async def task_completed(message: Message):
     user_data['current_day'] = user_data.get('current_day', 0) + 1
     user_data['completed_tasks'] = user_data.get('completed_tasks', 0) + 1
     user_data['task_completed_today'] = True
-    
-    # Проверяем пробный период
-    in_trial = await utils.is_in_trial_period(user_data)
-    
-    # Если в пробном периоде - увеличиваем счетчик
-    if in_trial:
-        trial_tasks = user_data.get('completed_tasks_in_trial', 0)
-        new_trial_count = trial_tasks + 1
-        
-        logger.info(f"📊 Пробный период: было {trial_tasks} заданий, станет {new_trial_count}")
-        
-        # Обновляем счетчик
-        user_data['completed_tasks_in_trial'] = new_trial_count
-        
-        # Проверяем, закончился ли пробный период (3 задания) - только для информации
-        # Но фактическое завершение пробного периода теперь через 3 дня с регистрации
-        if new_trial_count >= 3:
-            user_data['trial_finished'] = True
-            logger.info(f"🎯 Пользователь {user_id} выполнил 3 задания в пробном периоде")
     
     # Обновляем ранг и получаем результат
     rank_updated = await utils.update_user_rank(user_data)
@@ -2538,17 +2643,13 @@ async def task_completed(message: Message):
         except Exception as e:
             logger.error(f"Ошибка уведомления админа о ранге: {e}")
     
-    # Получаем базовое сообщение о выполнении задания (без упоминания ранга)
+    # Получаем базовое сообщение о выполнении задания
     reply = await BotReplies.get_task_completed_reply(gender, rank_updated, "")
     
     await message.answer(
         reply,
         reply_markup=keyboards.get_main_menu(user_id)
     )
-    
-    # ⚠️ УДАЛЕНО: НЕ отправляем уведомление о завершении пробного периода здесь
-    # Теперь это делает автоматическая система уведомлений SubscriptionNotifications
-    # которая проверяет всех пользователей ежедневно в 11:00
     
     await utils.update_user_activity(user_id)
 # ОБНОВЛЯЕМ обработчик "Подписка 💎"
@@ -2575,7 +2676,7 @@ async def show_subscription(message: Message, state: FSMContext):
         # Проверяем БЕСПЛАТНЫЙ пробный период
         created_at = datetime.fromisoformat(user_data.get('created_at', datetime.now().isoformat()))
         days_passed = (datetime.now() - created_at).days
-        is_trial = days_passed < 3  # БЕСПЛАТНЫЕ 3 дня!
+        is_trial = days_passed < config.TRIAL_DAYS  # Используем config.TRIAL_DAYS
         
         if await is_subscription_active(user_data):
             try:
@@ -2586,19 +2687,17 @@ async def show_subscription(message: Message, state: FSMContext):
                 message_text += "✅ <b>Статус:</b> Активна\n"
         elif is_trial:
             message_text += "🎁 <b>Статус:</b> БЕСПЛАТНЫЙ пробный период\n"
-            message_text += f"Осталось бесплатных дней: {3 - days_passed}\n\n"
+            message_text += f"Осталось бесплатных дней: {config.TRIAL_DAYS - days_passed}\n\n"
         else:
             message_text += "❌ <b>Статус:</b> Не активна\n"
             message_text += "Активируй подписку чтобы продолжить получать задания!\n\n"
         
         message_text += "<b>Доступные тарифы:</b>\n"
         
-        # ПОКАЗЫВАЕМ ТОЛЬКО ПЛАТНЫЕ ТАРИФЫ
         for tariff_id, tariff in config.TARIFFS.items():
             if tariff_id in ['month', 'year', 'pair_year']:
                 message_text += f"• {tariff['name']} - {tariff['price']} руб.\n"
         
-        # Используем клавиатуру С ВЫБОРОМ ЭТАПА
         await message.answer(message_text, reply_markup=keyboards.get_payment_keyboard_with_stages())
         
     except Exception as e:
@@ -2756,7 +2855,7 @@ async def process_tariff_direct_selection(callback: CallbackQuery, state: FSMCon
 # НАЙДИТЕ ЭТОТ ОБРАБОТЧИК И ОБНОВИТЕ ЕГО:
 @dp.callback_query(F.data == "activate_subscription_after_trial")
 async def activate_subscription_after_trial_handler(callback: CallbackQuery):
-    """Активация подписки после окончания пробного периода - ОБНОВЛЕННЫЙ"""
+    """Активация подписки после окончания пробного периода"""
     if not callback or not callback.message:
         return
         
@@ -2774,13 +2873,16 @@ async def activate_subscription_after_trial_handler(callback: CallbackQuery):
     
     # Проверяем, действительно ли пробный период закончился
     in_trial = await utils.is_in_trial_period(user_data)
-    trial_tasks = user_data.get('completed_tasks_in_trial', 0)
     
     # Если пробный период еще активен, информируем пользователя
-    if in_trial and trial_tasks < 3:
+    if in_trial:
+        created_at = datetime.fromisoformat(user_data.get('created_at', datetime.now().isoformat()))
+        days_passed = (datetime.now() - created_at).days
+        days_left = config.TRIAL_DAYS - days_passed
+        
         message_text = (
             f"ℹ️ <b>Твой пробный период еще активен!</b>\n\n"
-            f"Осталось заданий: {3 - trial_tasks}\n"
+            f"Осталось дней: {days_left}\n"
             f"Заверши пробный период, чтобы получить полное представление о системе.\n\n"
             f"А пока можешь ознакомиться с тарифами:"
         )
@@ -3164,42 +3266,104 @@ async def process_tariff_selection(callback: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("check_payment_"))
 async def check_payment_handler(callback: CallbackQuery):
-    """Проверка статуса оплаты"""
+    """Проверка статуса оплаты с безопасной обработкой"""
+    # ПРОВЕРКА ВСЕХ ВОЗМОЖНЫХ None
     if not callback or not callback.data:
+        try:
+            await callback.answer("❌ Ошибка данных")
+        except:
+            pass
         return
     
-    payment_id = callback.data.replace("check_payment_", "")
+    payment_id = callback.data.replace("check_payment_", "") if callback.data else ""
+    
+    if not callback.from_user:
+        try:
+            await callback.answer("❌ Ошибка пользователя")
+        except:
+            pass
+        return
+    
+    user = callback.from_user
     
     try:
         await callback.answer("🔄 Проверяем статус платежа...")
         
+        # Проверяем статус платежа
         payment_status = await payments.check_payment_status(payment_id)
         payment_data = await payments.get_payment_data(payment_id)
         
         if not payment_data:
-            await safe_edit_message(callback, "❌ Платеж не найден")
+            await safe_edit_message(callback, "❌ Платеж не найден в базе данных")
             return
         
-        if payment_data.get('user_id') != callback.from_user.id:
+        if payment_data['user_id'] != user.id:
             await safe_edit_message(callback, "❌ Это не ваш платеж")
             return
         
         if payment_status == "succeeded":
-            # Активируем подписку (этап уже будет в payment_data или в данных пользователя)
             await activate_subscription_after_payment(payment_data, callback)
             
         elif payment_status == "pending":
-            keyboard = InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="🔄 Проверить еще раз", callback_data=f"check_payment_{payment_id}")
+            check_keyboard = InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(
+                    text="🔄 Проверить еще раз", 
+                    callback_data=f"check_payment_{payment_id}"
+                )
             ]])
-            await safe_edit_message(callback, "⏳ Платеж еще обрабатывается...", keyboard)
             
+            await safe_edit_message(
+                callback,
+                "⏳ <b>Платеж еще обрабатывается</b>\n\n"
+                "Обычно это занимает несколько минут.\n"
+                "Попробуйте проверить статус через 2-3 минуты.",
+                check_keyboard
+            )
+            
+        elif payment_status == "canceled":
+            await safe_edit_message(
+                callback,
+                "❌ <b>Платеж отменен</b>\n\n"
+                "Вы можете создать новый платеж или выбрать другой тариф.",
+                keyboards.get_payment_keyboard()
+            )
+            
+        elif payment_status is None:
+            check_keyboard = InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(
+                    text="🔄 Попробовать снова", 
+                    callback_data=f"check_payment_{payment_id}"
+                )
+            ]])
+            
+            await safe_edit_message(
+                callback,
+                "❌ <b>Не удалось проверить статус платежа</b>\n\n"
+                "Попробуйте позже или обратитесь в поддержку.",
+                check_keyboard
+            )
         else:
-            await safe_edit_message(callback, f"❌ Статус платежа: {payment_status}")
+            check_keyboard = InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(
+                    text="🔄 Проверить статус", 
+                    callback_data=f"check_payment_{payment_id}"
+                )
+            ]])
+            
+            await safe_edit_message(
+                callback,
+                f"📊 <b>Статус платежа:</b> {payment_status}\n\n"
+                "Продолжайте ожидание или попробуйте проверить позже.",
+                check_keyboard
+            )
             
     except Exception as e:
         logger.error(f"❌ Ошибка проверки платежа: {e}")
-        await safe_edit_message(callback, "❌ Ошибка при проверке платежа")
+        await safe_edit_message(
+            callback,
+            "❌ <b>Произошла ошибка при проверке платежа</b>\n\n"
+            "Попробуйте позже или обратитесь в поддержку."
+        )
 @dp.callback_query(F.data.startswith("refresh_payment_"))
 async def refresh_payment_handler(callback: CallbackQuery):
     """Обновление страницы оплаты"""
@@ -3282,7 +3446,7 @@ async def back_to_tariffs_handler(callback: CallbackQuery, state: FSMContext):
         await callback.answer("❌ Ошибка")
 
 async def activate_subscription_after_payment(payment_data, callback):
-    """Активация подписки после успешной оплаты с учетом выбранного этапа"""
+    """Активация подписки после успешной оплаты с реферальным начислением и немедленной отправкой задания"""
     if not callback:
         return
         
@@ -3299,30 +3463,15 @@ async def activate_subscription_after_payment(payment_data, callback):
         await callback.answer("❌ Ошибка: пользователь не найден")
         return
     
-    # ПОЛУЧАЕМ ВЫБРАННЫЙ ЭТАП
-    selected_stage = await utils.get_user_selected_stage(user_id)
+    # ОБНОВЛЯЕМ статус платежа
+    await payments.update_payment_status(payment_data['payment_id'], 'succeeded')
     
-    # Если этап не выбран, используем этап из платежа
-    if not selected_stage:
-        selected_stage = payment_data.get('selected_stage')
-    
-    # РАССЧИТЫВАЕМ ДЕНЬ СТАРТА В ЗАВИСИМОСТИ ОТ ВЫБРАННОГО ЭТАПА
-    if selected_stage and 1 <= selected_stage <= 10:
-        # Первый день выбранного этапа
-        start_day = (selected_stage - 1) * 30 + 1
-        # Устанавливаем current_day на день перед стартовым (чтобы следующее задание было с нужного дня)
-        user_data['current_day'] = start_day - 1
-        logger.info(f"🎯 Пользователь {user_id} начинает с этапа {selected_stage} (день {start_day})")
-    else:
-        # Если этап не выбран, начинаем с первого дня
-        user_data['current_day'] = 0
-        logger.info(f"🎯 Пользователь {user_id} начинает с первого дня (этап не был выбран)")
+    if tariff_id == "pair_year":
+        await activate_pair_subscription(user_data, user_id, tariff, callback)
+        return  # Для парной подписки своя логика
     
     # ДОБАВЛЯЕМ ДНИ ПОДПИСКИ
     updated_user_data = await utils.add_subscription_days(user_data, tariff['days'])
-    
-    # ОЧИЩАЕМ ВЫБРАННЫЙ ЭТАП (чтобы не использовать повторно)
-    await utils.clear_user_selected_stage(user_id)
     
     # НАЧИСЛЯЕМ РЕФЕРАЛЬНЫЙ БОНУС
     referral_result = await utils.process_referral_payment(
@@ -3331,12 +3480,16 @@ async def activate_subscription_after_payment(payment_data, callback):
         tariff_id
     )
     
-    # Обрабатываем результат реферала
+    # ПРАВИЛЬНО ОБРАБАТЫВАЕМ РЕЗУЛЬТАТ
     if referral_result and len(referral_result) == 4:
         success, referrer_id, bonus_amount, percent = referral_result
+        
         if success and referrer_id and bonus_amount > 0:
+            # Получаем новый баланс реферера
             referrer_data = await utils.get_user(referrer_id)
             new_balance = referrer_data.get('referral_earnings', 0) if referrer_data else 0
+            
+            # Отправляем уведомление рефереру
             await ReferralNotifications.send_referral_bonus_notification(
                 bot=bot,
                 referrer_id=referrer_id,
@@ -3348,6 +3501,12 @@ async def activate_subscription_after_payment(payment_data, callback):
                     'new_balance': new_balance
                 }
             )
+    else:
+        # Если что-то пошло не так
+        success = False
+        referrer_id = None
+        bonus_amount = 0
+        percent = 0
     
     await utils.save_user(user_id, updated_user_data)
     
@@ -3356,37 +3515,45 @@ async def activate_subscription_after_payment(payment_data, callback):
         f"💎 Тариф: {tariff['name']}\n"
         f"⏰ Срок: {tariff['days']} дней\n"
         f"💰 Стоимость: {tariff['price']} руб.\n"
+        f"🎯 Теперь у вас есть доступ ко всем заданиям!\n\n"
     )
     
-    if selected_stage:
-        success_message += f"🎯 Выбранный этап: {selected_stage}\n\n"
-    else:
-        success_message += f"🎯 Начинаем с первого этапа!\n\n"
+    if success and bonus_amount > 0:
+        success_message += f"🎉 <b>Вы принесли доход своему рефереру: {bonus_amount} руб.!</b>\n\n"
     
-    success_message += f"📋 <b>Твое первое задание придет прямо сейчас!</b>"
+    success_message += f"Задания будут приходить ежедневно в 9:00 🕘\n\n"
     
-    await safe_edit_message(callback, success_message)
+    # 🔥 ВАЖНОЕ ДОБАВЛЕНИЕ: НЕМЕДЛЕННАЯ ОТПРАВКА ТЕКУЩЕГО ЗАДАНИЯ
+    success_message += "<b>Твое следующее задание придет прямо сейчас! ⬇️</b>"
     
-    # ОТПРАВЛЯЕМ ЗАДАНИЕ НЕМЕДЛЕННО
+    success_edit = await safe_edit_message(callback, success_message)
+    if not success_edit:
+        await safe_send_message(callback, success_message)
+    
+    # 🔥 КРИТИЧЕСКО ВАЖНО: ОТПРАВЛЯЕМ ЗАДАНИЕ НЕМЕДЛЕННО
     try:
+        # Получаем следующий день (текущий день + 1)
         current_day = updated_user_data.get('current_day', 0)
         next_day = current_day + 1
         
+        # Если пользователь только начал (день 0), ставим день 1
         if next_day == 0:
             next_day = 1
-        
-        # Получаем задание для рассчитанного дня
+            
+        # Получаем задание для следующего дня
         task_id, task = await utils.get_task_by_day(next_day, updated_user_data.get('archetype', 'spartan'))
         
         if task:
+            # Форматируем сообщение с заданием
             task_message = (
-                f"📋 <b>Твое первое задание!</b>\n\n"
+                f"📋 <b>Новое задание!</b>\n\n"
                 f"<b>День {next_day}/300</b>\n\n"
                 f"{task['text']}\n\n"
                 f"⏰ <b>Выполни задание до 23:59</b>\n\n"
                 f"<i>Отмечай выполнение кнопками ниже 👇</i>"
             )
             
+            # Отправляем задание
             await bot.send_message(
                 chat_id=user_id,
                 text=task_message,
@@ -3394,18 +3561,19 @@ async def activate_subscription_after_payment(payment_data, callback):
                 disable_web_page_preview=True
             )
             
+            # Обновляем данные пользователя
             updated_user_data['last_task_sent'] = datetime.now().isoformat()
             updated_user_data['task_completed_today'] = False
             await utils.save_user(user_id, updated_user_data)
             
-            logger.info(f"✅ Задание дня {next_day} отправлено пользователю {user_id}")
+            logger.info(f"✅ Задание дня {next_day} отправлено пользователю {user_id} после активации подписки")
         else:
             logger.warning(f"⚠️ Не найдено задание дня {next_day} для пользователя {user_id}")
             
     except Exception as e:
-        logger.error(f"❌ Ошибка отправки задания: {e}")
+        logger.error(f"❌ Ошибка отправки задания после активации подписки пользователю {user_id}: {e}")
     
-    # УВЕДОМЛЯЕМ АДМИНА
+    # УВЕДОМЛЯЕМ админа об успешной активации
     try:
         user = callback.from_user
         if user:
@@ -3414,10 +3582,19 @@ async def activate_subscription_after_payment(payment_data, callback):
                 f"👤 Пользователь: {user.first_name} (@{user.username or 'нет'})\n"
                 f"🆔 ID: {user_id}\n"
                 f"💎 Тариф: {tariff['name']}\n"
-                f"🎯 Выбранный этап: {selected_stage if selected_stage else '1'}\n"
                 f"💰 Сумма: {tariff['price']} руб.\n"
                 f"📅 Дней: {tariff['days']}\n"
+                f"⏰ Дата окончания: {updated_user_data.get('subscription_end', 'неизвестно')}\n\n"
             )
+            
+            if success and referrer_id:
+                admin_message += (
+                    f"🤝 <b>Реферальное начисление:</b>\n"
+                    f"• Реферер: {referrer_id}\n"
+                    f"• Бонус: {bonus_amount} руб.\n"
+                    f"• Процент: {percent}%\n"
+                )
+            
             await bot.send_message(config.ADMIN_ID, admin_message)
     except Exception as e:
         logger.error(f"Ошибка уведомления админа: {e}")
@@ -7425,6 +7602,143 @@ async def admin_stats_general(callback: CallbackQuery):
     await callback.message.answer(stats_text, reply_markup=get_admin_stats_keyboard())
     await callback.answer()
 
+@dp.message(Command("delete_user"))
+async def delete_user_command(message: Message):
+    """Удаляет пользователя по ID (только для админа)"""
+    # Проверка на None
+    if not message:
+        return
+    
+    if not message.from_user:
+        return
+    
+    if message.from_user.id != config.ADMIN_ID:
+        await message.answer("⛔ Нет доступа")
+        return
+    
+    if not message.text:
+        await message.answer("❌ Укажите ID пользователя")
+        return
+    
+    args = message.text.split()
+    if len(args) < 2:
+        await message.answer(
+            "❌ Укажите ID пользователя для удаления\n"
+            "Пример: `/delete_user 123456789`",
+            parse_mode="Markdown"
+        )
+        return
+    
+    try:
+        target_id = int(args[1])
+        
+        # Получаем данные пользователя
+        user_data = await utils.get_user(target_id)
+        
+        if not user_data:
+            await message.answer(f"❌ Пользователь с ID {target_id} не найден")
+            return
+        
+        name = user_data.get('first_name', 'Неизвестно')
+        
+        # Подтверждение
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ ДА, УДАЛИТЬ", callback_data=f"confirm_delete_{target_id}"),
+                InlineKeyboardButton(text="❌ ОТМЕНА", callback_data="cancel_delete")
+            ]
+        ])
+        
+        await message.answer(
+            f"⚠️ <b>ПОДТВЕРДИТЕ УДАЛЕНИЕ</b>\n\n"
+            f"👤 Пользователь: {name}\n"
+            f"🆔 ID: {target_id}\n\n"
+            f"Действие необратимо!",
+            reply_markup=keyboard
+        )
+        
+    except ValueError:
+        await message.answer("❌ ID должен быть числом")
+    except Exception as e:
+        logger.error(f"Ошибка в delete_user_command: {e}")
+        await message.answer("❌ Произошла ошибка")
+
+
+@dp.callback_query(F.data.startswith("confirm_delete_"))
+async def confirm_delete_user(callback: CallbackQuery):
+    """Подтверждение удаления пользователя"""
+    # Проверка на None
+    if not callback:
+        return
+    
+    if not callback.from_user:
+        return
+    
+    if callback.from_user.id != config.ADMIN_ID:
+        try:
+            await callback.answer("⛔ Нет доступа")
+        except:
+            pass
+        return
+    
+    if not callback.data:
+        return
+    
+    if not callback.message:
+        try:
+            await callback.answer("❌ Ошибка сообщения")
+        except:
+            pass
+        return
+    
+    try:
+        target_id = int(callback.data.replace("confirm_delete_", ""))
+    except ValueError:
+        try:
+            await callback.answer("❌ Неверный ID")
+        except:
+            pass
+        return
+    
+    # Выполняем удаление
+    try:
+        success = await utils.safe_delete_user(target_id, reason="admin_command", actor_id=callback.from_user.id)
+        
+        if success:
+            await callback.message.edit_text(f"✅ Пользователь {target_id} удалён")
+        else:
+            await callback.message.edit_text(f"❌ Не удалось удалить пользователя {target_id}")
+    except Exception as e:
+        logger.error(f"Ошибка удаления: {e}")
+        await callback.message.edit_text("❌ Ошибка при удалении")
+    
+    try:
+        await callback.answer()
+    except:
+        pass
+
+
+@dp.callback_query(F.data == "cancel_delete")
+async def cancel_delete(callback: CallbackQuery):
+    """Отмена удаления"""
+    # Проверка на None
+    if not callback:
+        return
+    
+    if not callback.message:
+        return
+    
+    try:
+        await callback.message.edit_text("❌ Удаление отменено")
+    except Exception as e:
+        logger.error(f"Ошибка отмены: {e}")
+    
+    try:
+        await callback.answer()
+    except:
+        pass
+
+
 # Добавить обработчики для остальных админских callback'ов
 @dp.callback_query(F.data == "admin_stats_active")
 async def admin_stats_active(callback: CallbackQuery):
@@ -10394,23 +10708,32 @@ async def go_to_subscription_from_stages(callback: CallbackQuery, state: FSMCont
 async def select_stage_for_payment(callback: CallbackQuery, state: FSMContext):
     """
     Выбор этапа и переход к оплате
+    Формат: select_stage_{stage_num}_{tariff_id}
     """
     # Защита от None
-    if not callback or not callback.data:
+    if callback is None:
         return
     
-    if not callback.message:
+    if not hasattr(callback, 'data') or callback.data is None:
         try:
-            await callback.answer("❌ Ошибка: сообщение не найдено")
+            await callback.answer("❌ Ошибка данных")
         except:
             pass
         return
+    
+    if not hasattr(callback, 'from_user') or callback.from_user is None:
+        return
+    
+    message_obj = getattr(callback, 'message', None)
     
     try:
         # Парсим данные
         parts = callback.data.replace("select_stage_", "").split("_")
         if len(parts) < 2:
-            await callback.answer("❌ Неверный формат данных")
+            try:
+                await callback.answer("❌ Неверный формат данных")
+            except:
+                pass
             return
             
         stage_num = int(parts[0])
@@ -10418,60 +10741,110 @@ async def select_stage_for_payment(callback: CallbackQuery, state: FSMContext):
         
         tariff = config.TARIFFS.get(tariff_id)
         if not tariff:
-            await callback.answer("❌ Тариф не найден")
+            try:
+                await callback.answer("❌ Тариф не найден")
+            except:
+                pass
             return
         
         user = callback.from_user
-        if not user:
-            await callback.answer("❌ Ошибка пользователя")
-            return
-            
         user_id = user.id
+        user_data = await utils.get_user(user_id)
         
-        # Сохраняем выбранный этап
+        if not user_data:
+            try:
+                await callback.answer("❌ Сначала зарегистрируйтесь через /start")
+            except:
+                pass
+            return
+        
+        # Сохраняем выбор этапа
         await utils.save_user_stage_choice(user_id, tariff_id, stage_num)
         
-        # Создаем платеж
-        description = f"{tariff['name']} (этап {stage_num}) для {user.first_name or user.id}"
-        payment_data = await payments.create_yookassa_payment(
-            amount=tariff['price'],
-            description=description,
-            user_id=user_id,
-            tariff_id=tariff_id
-        )
-        
-        if not payment_data:
-            await callback.answer("❌ Ошибка создания платежа")
-            return
-        
-        # Сохраняем этап в данных платежа
-        await payments.update_payment_stage(payment_data['payment_id'], stage_num)
-        
-        message_text = (
-            f"<b>💎 ОПЛАТА ПОДПИСКИ</b>\n\n"
-            f"📦 <b>Тариф:</b> {tariff['name']}\n"
-            f"🎯 <b>Выбранный этап:</b> {stage_num}\n"
-            f"💰 <b>Сумма:</b> {tariff['price']} руб.\n\n"
-            f"🔗 <b>Ссылка для оплаты:</b>\n"
-            f"<a href='{payment_data['confirmation_url']}'>Нажмите для перехода к оплате</a>\n\n"
-            f"⏳ <b>Платеж действителен 30 минут</b>"
-        )
-        
-        keyboard = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text="🔗 Перейти к оплате", url=payment_data['confirmation_url'])],
-                [InlineKeyboardButton(text="✅ Проверить оплату", callback_data=f"check_payment_{payment_data['payment_id']}")]
-            ]
-        )
-        
-        # Проверяем существование message перед вызовом edit_text
-        if callback.message:
-            await callback.message.edit_text(message_text, reply_markup=keyboard)
-        else:
-            # Если сообщения нет, отправляем новое
-            await bot.send_message(chat_id=user_id, text=message_text, reply_markup=keyboard)
-        
-        await callback.answer("✅ Платеж создан!")
+        # Пытаемся создать платеж
+        try:
+            # Проверяем, есть ли модуль payments и функция create_yookassa_payment
+            if not hasattr(payments, 'create_yookassa_payment'):
+                logger.error("❌ Функция create_yookassa_payment не найдена в модуле payments")
+                await callback.answer("❌ Ошибка настройки платежной системы")
+                return
+            
+            description = f"{tariff['name']} (этап {stage_num}) для {user.first_name or user.id}"
+            payment_data = await payments.create_yookassa_payment(
+                amount=tariff['price'],
+                description=description,
+                user_id=user_id,
+                tariff_id=tariff_id
+            )
+            
+            if not payment_data:
+                await callback.answer("❌ Ошибка создания платежа. Попробуйте позже.")
+                return
+            
+            # Формируем сообщение с оплатой
+            message_text = (
+                f"<b>💎 ОПЛАТА ПОДПИСКИ</b>\n\n"
+                f"📦 <b>Тариф:</b> {tariff['name']}\n"
+                f"🎯 <b>Выбранный этап:</b> {stage_num}\n"
+                f"💰 <b>Сумма:</b> {tariff['price']} руб.\n"
+                f"⏰ <b>Срок:</b> {tariff['days']} дней\n\n"
+                f"🔗 <b>Ссылка для оплаты:</b>\n"
+                f"<a href='{payment_data['confirmation_url']}'>Нажмите для перехода к оплате</a>\n\n"
+                f"📱 <b>После оплаты:</b>\n"
+                f"1. Вернитесь в бота\n"
+                f"2. Нажмите кнопку «✅ Проверить оплату» ниже\n"
+                f"3. Подписка активируется автоматически\n"
+                f"4. Задания начнутся с выбранного этапа!\n\n"
+                f"⏳ <b>Платеж действителен 30 минут</b>\n"
+                f"💡 <b>ID платежа:</b> <code>{payment_data['payment_id'][:8]}...</code>"
+            )
+            
+            # Создаем клавиатуру
+            keyboard = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(
+                        text="🔗 Перейти к оплате", 
+                        url=payment_data['confirmation_url']
+                    )],
+                    [InlineKeyboardButton(
+                        text="✅ Проверить оплату", 
+                        callback_data=f"check_payment_{payment_data['payment_id']}"
+                    )],
+                    [InlineKeyboardButton(
+                        text="🔙 Назад к выбору этапа",
+                        callback_data=f"back_to_stages_{tariff_id}"
+                    )]
+                ]
+            )
+            
+            # Отправляем сообщение
+            if message_obj is not None:
+                try:
+                    await message_obj.edit_text(message_text, reply_markup=keyboard)
+                except:
+                    await bot.send_message(
+                        chat_id=user_id,
+                        text=message_text,
+                        reply_markup=keyboard
+                    )
+            else:
+                await bot.send_message(
+                    chat_id=user_id,
+                    text=message_text,
+                    reply_markup=keyboard
+                )
+            
+            await callback.answer("✅ Платеж создан!")
+            
+        except ImportError as e:
+            logger.error(f"❌ Ошибка импорта payments: {e}")
+            await callback.answer("❌ Ошибка платежной системы")
+        except AttributeError as e:
+            logger.error(f"❌ Ошибка атрибута в payments: {e}")
+            await callback.answer("❌ Ошибка платежной системы")
+        except Exception as e:
+            logger.error(f"❌ Ошибка создания платежа: {e}")
+            await callback.answer("❌ Ошибка при создании платежа")
         
     except Exception as e:
         logger.error(f"❌ Ошибка в select_stage_for_payment: {e}")
@@ -10479,6 +10852,7 @@ async def select_stage_for_payment(callback: CallbackQuery, state: FSMContext):
             await callback.answer("❌ Ошибка")
         except:
             pass
+
 @dp.callback_query(F.data.startswith("tariff_with_stage_"))
 async def process_tariff_with_stage_selection(callback: CallbackQuery, state: FSMContext):
     """

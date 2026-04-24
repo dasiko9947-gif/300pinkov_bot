@@ -191,3 +191,12 @@ MASS_NOTIFICATION_TYPES = {
     'trial': 'В пробном периоде',
     'no_subscription': 'Без подписки'
 } 
+
+# Добавьте в config.py после других констант
+TRIAL_DAYS = 7  # Количество дней пробного периода
+TRIAL_MESSAGE = "7 дней БЕСПЛАТНОГО доступа"
+
+# Добавьте в config.py
+CHANNEL_USERNAME = "@pinkov300"  # Username канала (с @)
+CHANNEL_ID = "-1003006111280"  # ID канала (можно получить через @userinfobot)
+CHANNEL_LINK = "https://t.me/pinkov300"

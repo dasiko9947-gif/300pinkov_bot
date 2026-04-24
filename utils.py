@@ -408,6 +408,8 @@ async def get_todays_tasks(user_data):
     logger.info(f"   📊 Всего заданий: {len(tasks)}")
     return tasks  # ВСЕГДА возвращаем список (даже пустой)
 # В utils.py добавляем/обновляем функцию:
+# В файле utils.py - ИСПРАВЛЕННАЯ ВЕРСИЯ (без utils.)
+
 async def can_receive_new_task(user_data: dict) -> bool:
     """
     Проверяет, может ли пользователь получить новое задание
@@ -418,7 +420,7 @@ async def can_receive_new_task(user_data: dict) -> bool:
     3. Пользователь не заблокирован за вчерашнее задание (или прошло 24+ часов)
     """
     try:
-        # Проверка подписки
+        # Проверка подписки - вызываем функции напрямую (без utils.)
         has_subscription = await is_subscription_active(user_data)
         in_trial = await is_in_trial_period(user_data)
         
@@ -437,6 +439,9 @@ async def can_receive_new_task(user_data: dict) -> bool:
         if needs_to_complete_yesterday and blocked_since_str:
             try:
                 # Проверяем, сколько времени прошло с момента блокировки
+                from datetime import datetime
+                import pytz
+                
                 blocked_since = datetime.fromisoformat(blocked_since_str)
                 now = datetime.now(blocked_since.tzinfo if blocked_since.tzinfo else pytz.UTC)
                 
@@ -454,11 +459,8 @@ async def can_receive_new_task(user_data: dict) -> bool:
                 logger.error(f"❌ Ошибка проверки времени блокировки: {e}")
                 return False
         
-        # Проверка количества заданий в пробном периоде
-        if in_trial:
-            trial_tasks = user_data.get('completed_tasks_in_trial', 0)
-            if trial_tasks >= 3:
-                return False
+        # Проверка количества заданий в пробном периоде - больше не нужна
+        # Теперь пробный период ограничен ТОЛЬКО по времени (7 дней)
         
         # Проверка спринтов (если есть)
         in_sprint = user_data.get('sprint_type') and not user_data.get('sprint_completed')
@@ -589,7 +591,7 @@ async def add_subscription_days(user_data, days):
     return user_data
 
 async def is_in_trial_period(user_data: dict) -> bool:
-    """Проверяет, находится ли пользователь в пробном периоде (3 дня с регистрации)"""
+    """Проверяет, находится ли пользователь в пробном периоде (7 дней с регистрации)"""
     try:
         # Если пользователь уже закончил пробный период
         if user_data.get('trial_finished'):
@@ -598,8 +600,8 @@ async def is_in_trial_period(user_data: dict) -> bool:
         created_at = datetime.fromisoformat(user_data.get('created_at', datetime.now().isoformat()))
         days_passed = (datetime.now() - created_at).days
         
-        # Пробный период длится 3 дня с момента регистрации
-        return days_passed < 3
+        # Пробный период длится TRIAL_DAYS дней с момента регистрации
+        return days_passed < config.TRIAL_DAYS
         
     except Exception as e:
         logger.error(f"❌ Ошибка проверки пробного периода: {e}")
@@ -614,9 +616,9 @@ async def get_trial_days_left(user_data: dict) -> int:
         created_at = datetime.fromisoformat(user_data.get('created_at', datetime.now().isoformat()))
         days_passed = (datetime.now() - created_at).days
         
-        if days_passed >= 3:
+        if days_passed >= config.TRIAL_DAYS:
             return 0
-        return 3 - days_passed
+        return config.TRIAL_DAYS - days_passed
         
     except Exception as e:
         logger.error(f"❌ Ошибка расчета дней пробного периода: {e}")
@@ -1879,22 +1881,33 @@ async def format_stage_message(stage_info: dict, user_data: dict) -> str:
 async def save_user_stage_choice(user_id: int, tariff_id: str, stage_num: int) -> bool:
     """
     Сохраняет выбор этапа пользователя перед оплатой
+    
+    Args:
+        user_id: ID пользователя
+        tariff_id: ID тарифа (month/year/pair_year)
+        stage_num: выбранный этап (1-10)
+    
+    Returns:
+        bool: успешно ли сохранено
     """
     try:
         from datetime import datetime
         
         user_data = await get_user(user_id)
         if not user_data:
-            logger.error(f"❌ Пользователь {user_id} не найден")
+            logger.error(f"❌ Пользователь {user_id} не найден при сохранении выбора этапа")
             return False
         
-        # Сохраняем выбранный этап
-        user_data['selected_stage'] = stage_num
-        user_data['selected_stage_tariff'] = tariff_id
-        user_data['selected_stage_at'] = datetime.now().isoformat()
+        # Сохраняем информацию о выбранном этапе
+        if 'pending_subscription' not in user_data:
+            user_data['pending_subscription'] = {}
+        
+        user_data['pending_subscription']['selected_stage'] = stage_num
+        user_data['pending_subscription']['tariff_id'] = tariff_id
+        user_data['pending_subscription']['selected_at'] = datetime.now().isoformat()
         
         await save_user(user_id, user_data)
-        logger.info(f"✅ Сохранен этап {stage_num} для пользователя {user_id}")
+        logger.info(f"✅ Сохранен выбор этапа {stage_num} для тарифа {tariff_id} пользователем {user_id}")
         return True
         
     except Exception as e:
@@ -1902,48 +1915,71 @@ async def save_user_stage_choice(user_id: int, tariff_id: str, stage_num: int) -
         return False
 
 
-async def get_user_selected_stage(user_id: int) -> int:
+async def get_user_stage_choice(user_id: int) -> dict:
     """
-    Возвращает выбранный пользователем этап
+    Получает сохраненный выбор этапа пользователя
     
     Returns:
-        int: номер этапа (1-10) или 0, если этап не выбран
+        Словарь с данными выбора или пустой словарь
     """
     try:
         user_data = await get_user(user_id)
         if not user_data:
-            return 0
+            return {}
         
-        stage = user_data.get('selected_stage')
-        if stage is None:
-            return 0
-        
-        return int(stage) if 1 <= int(stage) <= 10 else 0
+        return user_data.get('pending_subscription', {})
         
     except Exception as e:
-        logger.error(f"❌ Ошибка получения выбранного этапа: {e}")
-        return 0
-    
-async def clear_user_selected_stage(user_id: int) -> bool:
+        logger.error(f"❌ Ошибка получения выбора этапа: {e}")
+        return {}
+
+
+async def clear_user_stage_choice(user_id: int) -> bool:
     """
-    Очищает выбранный этап после активации подписки
+    Очищает сохраненный выбор этапа после оплаты или отмены
     """
     try:
         user_data = await get_user(user_id)
         if not user_data:
             return False
         
-        if 'selected_stage' in user_data:
-            del user_data['selected_stage']
-        if 'selected_stage_tariff' in user_data:
-            del user_data['selected_stage_tariff']
-        if 'selected_stage_at' in user_data:
-            del user_data['selected_stage_at']
+        if 'pending_subscription' in user_data:
+            del user_data['pending_subscription']
+            await save_user(user_id, user_data)
+            logger.info(f"✅ Очищен выбор этапа для пользователя {user_id}")
         
-        await save_user(user_id, user_data)
-        logger.info(f"✅ Очищен выбранный этап для пользователя {user_id}")
         return True
         
     except Exception as e:
-        logger.error(f"❌ Ошибка очистки выбранного этапа: {e}")
+        logger.error(f"❌ Ошибка очистки выбора этапа: {e}")
         return False
+
+# Добавьте в utils.py
+async def check_channel_subscription(bot, user_id: int) -> bool:
+    """Проверяет подписку на канал"""
+    try:
+        # Пробуем через username
+        chat_member = await bot.get_chat_member(
+            chat_id=config.CHANNEL_USERNAME, 
+            user_id=user_id
+        )
+        
+        # Подписан, если статус member, creator или administrator
+        if chat_member.status in ['member', 'creator', 'administrator']:
+            logger.info(f"✅ Пользователь {user_id} подписан")
+            return True
+        else:
+            logger.info(f"❌ Пользователь {user_id} не подписан. Статус: {chat_member.status}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"❌ Ошибка проверки: {e}")
+        # Если бот не админ в канале - пропускаем проверку (только для теста)
+        if "bot is not a member" in str(e):
+            logger.warning("⚠️ Бот не добавлен в канал! Проверка отключена")
+            return True  # ВРЕМЕННО пропускаем проверку
+        return False
+
+async def get_channel_invite_link() -> str:
+    """Возвращает ссылку-приглашение в канал"""
+    return config.CHANNEL_LINK
